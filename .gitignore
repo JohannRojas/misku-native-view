@@ -1,0 +1,11 @@
+/target/
+/src-tauri/target/
+/node_modules/
+/dist/*
+!/dist/index.html
+/.env
+/.env.*
+*.log
+/portable/
+/screenshots/
+

@@ -1,0 +1,20 @@
+[package]
+name = "misku-native-views"
+version = "0.1.0"
+description = "Native WebView launcher for configured web apps"
+authors = ["Johan"]
+edition = "2024"
+
+[build-dependencies]
+tauri-build = "2"
+
+[dependencies]
+serde = { version = "1", features = ["derive"] }
+tauri = { version = "2", features = ["image-ico", "image-png"] }
+tauri-plugin-window-state = "2"
+toml = "0.8"
+url = "2"
+
+
+
+

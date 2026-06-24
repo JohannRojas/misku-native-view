@@ -1,0 +1,27 @@
+[[apps]]
+id = "tftacademy"
+name = "TFT Academy"
+url = "https://tftacademy.com/tierlist/comps/"
+icon = "icons/tftacademy.ico"
+width = 1280
+height = 860
+min_width = 900
+min_height = 640
+isolated_profile = true
+devtools = true
+resizable = true
+zoom_hotkeys_enabled = true
+
+[[apps]]
+id = "x"
+name = "X"
+url = "https://x.com/home"
+icon = "icons/twitter.ico"
+width = 1280
+height = 860
+min_width = 900
+min_height = 420
+isolated_profile = true
+devtools = false
+resizable = true
+zoom_hotkeys_enabled = false

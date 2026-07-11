@@ -1,0 +1,43 @@
+{
+  "name": "misku-native-view-cli",
+  "version": "0.1.0",
+  "description": "Installable CLI for launching websites as native Windows WebView apps",
+  "license": "UNLICENSED",
+  "type": "commonjs",
+  "os": [
+    "win32"
+  ],
+  "cpu": [
+    "x64"
+  ],
+  "engines": {
+    "node": ">=18"
+  },
+  "bin": {
+    "misku-nv": "./bin/misku.js",
+    "misku": "./bin/misku.js",
+    "misku-native-views": "./bin/misku.js"
+  },
+  "files": [
+    "bin/",
+    "portable/misku-native-views.exe",
+    "portable/apps.toml",
+    "portable/icons/",
+    "README.md"
+  ],
+  "scripts": {
+    "prepack": "powershell -NoProfile -ExecutionPolicy Bypass -File ./scripts/build-pnpm-package.ps1"
+  },
+  "keywords": [
+    "tauri",
+    "webview",
+    "windows",
+    "cli",
+    "desktop"
+  ],
+  "packageManager": "pnpm@11.7.0",
+  "publishConfig": {
+    "registry": "https://registry.npmjs.org/",
+    "access": "public"
+  }
+}

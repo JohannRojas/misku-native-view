@@ -1,0 +1,65 @@
+name: CI
+
+on:
+  push:
+    branches:
+      - "**"
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  package:
+    name: Build, pack, and smoke test
+    runs-on: windows-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+
+      - name: Setup pnpm
+        shell: pwsh
+        run: |
+          corepack enable
+          corepack prepare pnpm@11.7.0 --activate
+          pnpm --version
+
+      - name: Setup Rust
+        shell: pwsh
+        run: |
+          rustup toolchain install stable --profile minimal
+          rustup default stable
+          cargo --version
+
+      - name: Check Rust workspace
+        shell: pwsh
+        run: cargo check -p misku-native-views
+
+      - name: Pack CLI package
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Path artifacts -Force | Out-Null
+          pnpm pack --pack-destination artifacts
+
+      - name: Smoke test installed CLI
+        shell: pwsh
+        run: |
+          $package = Get-ChildItem -LiteralPath artifacts -Filter "*.tgz" | Select-Object -First 1
+          if (-not $package) {
+            throw "No se genero ningun .tgz en artifacts."
+          }
+          .\scripts\ci-smoke-test-package.ps1 -PackagePath $package.FullName
+
+      - name: Upload package artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: misku-native-view-cli
+          path: artifacts/*.tgz
+          if-no-files-found: error

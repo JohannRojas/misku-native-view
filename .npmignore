@@ -2,10 +2,9 @@
 /src-tauri/target/
 /node_modules/
 /dist/*
-!/dist/index.html
+!dist/index.html
 /.env
 /.env.*
 *.log
-/portable/
 /screenshots/
 /artifacts/

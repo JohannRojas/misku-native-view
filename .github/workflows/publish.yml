@@ -1,0 +1,114 @@
+name: Publish package
+
+on:
+  push:
+    branches:
+      - main
+      - master
+    tags:
+      - "v*"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  publish:
+    name: Publish to npm registry
+    runs-on: windows-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          registry-url: "https://registry.npmjs.org"
+
+      - name: Setup pnpm
+        shell: pwsh
+        run: |
+          corepack enable
+          corepack prepare pnpm@11.7.0 --activate
+          pnpm --version
+
+      - name: Setup Rust
+        shell: pwsh
+        run: |
+          rustup toolchain install stable --profile minimal
+          rustup default stable
+          cargo --version
+
+      - name: Set publish version
+        shell: pwsh
+        run: |
+          $package = Get-Content -LiteralPath package.json -Raw | ConvertFrom-Json
+          $baseVersion = $package.version -replace "-.*$", ""
+
+          if ($env:GITHUB_REF_TYPE -eq "tag") {
+            $version = $env:GITHUB_REF_NAME -replace "^v", ""
+          } else {
+            $version = "$baseVersion-ci.$env:GITHUB_RUN_NUMBER.$env:GITHUB_RUN_ATTEMPT"
+          }
+
+          $package.version = $version
+          $package | ConvertTo-Json -Depth 20 | Set-Content -LiteralPath package.json -Encoding UTF8
+
+          "PACKAGE_VERSION=$version" >> $env:GITHUB_ENV
+          "NPM_DIST_TAG=latest" >> $env:GITHUB_ENV
+          Write-Output "Publishing version $version with dist-tag latest"
+
+      - name: Pack CLI package
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Path artifacts -Force | Out-Null
+          pnpm pack --pack-destination artifacts
+
+      - name: Smoke test installed CLI
+        shell: pwsh
+        run: |
+          $package = Get-ChildItem -LiteralPath artifacts -Filter "*.tgz" | Select-Object -First 1
+          if (-not $package) {
+            throw "No se genero ningun .tgz en artifacts."
+          }
+          .\scripts\ci-smoke-test-package.ps1 -PackagePath $package.FullName
+
+      - name: Verify npm token
+        shell: pwsh
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+        run: |
+          if ([string]::IsNullOrWhiteSpace($env:NODE_AUTH_TOKEN)) {
+            throw "Falta configurar el secret NPM_TOKEN en GitHub."
+          }
+
+      - name: Publish
+        shell: pwsh
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+        run: pnpm publish --no-git-checks --access public --tag $env:NPM_DIST_TAG
+
+      - name: Smoke test package from npm registry
+        shell: pwsh
+        run: |
+          $packageSpec = "misku-native-view-cli@$env:PACKAGE_VERSION"
+          for ($attempt = 1; $attempt -le 6; $attempt++) {
+            try {
+              .\scripts\ci-smoke-test-package.ps1 -Package $packageSpec
+              exit 0
+            } catch {
+              if ($attempt -eq 6) {
+                throw
+              }
+              Write-Warning "Registry smoke test failed on attempt $attempt. Retrying in 10 seconds. $($_.Exception.Message)"
+              Start-Sleep -Seconds 10
+            }
+          }
+      - name: Upload published package artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: misku-native-view-cli-${{ env.PACKAGE_VERSION }}
+          path: artifacts/*.tgz
+          if-no-files-found: error

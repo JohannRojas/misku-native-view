@@ -1,20 +1,28 @@
 [package]
 name = "misku-native-views"
-version = "0.1.0"
-description = "Native WebView launcher for configured web apps"
+version = "0.2.0"
+description = "Native WebView runtime and CLI for isolated web apps"
 authors = ["Johan"]
 edition = "2024"
+rust-version = "1.88"
 
 [build-dependencies]
 tauri-build = "2"
 
 [dependencies]
+image = { version = "0.25", default-features = false, features = ["ico", "png"] }
 serde = { version = "1", features = ["derive"] }
+serde_json = "1"
 tauri = { version = "2", features = ["image-ico", "image-png"] }
 tauri-plugin-window-state = "2"
 toml = "0.8"
 url = "2"
+uuid = { version = "1", features = ["v4", "v5", "serde"] }
 
-
-
-
+[target.'cfg(windows)'.dependencies]
+windows = { version = "0.61", features = [
+  "Win32_Foundation",
+  "Win32_Storage_FileSystem",
+  "Win32_UI_Shell",
+  "Win32_UI_WindowsAndMessaging",
+] }

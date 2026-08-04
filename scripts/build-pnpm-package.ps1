@@ -1,72 +1,82 @@
+param(
+    [string] $TargetTriple = "x86_64-pc-windows-msvc"
+)
+
 $ErrorActionPreference = "Stop"
+Set-StrictMode -Version Latest
 
 . (Join-Path $PSScriptRoot "build-env.ps1")
 
-function Test-FileLocked {
+function Get-Sha256 {
     param([Parameter(Mandatory = $true)][string] $Path)
 
-    if (-not (Test-Path -LiteralPath $Path)) {
-        return $false
-    }
-
-    $stream = $null
+    $stream = [System.IO.File]::OpenRead($Path)
+    $algorithm = [System.Security.Cryptography.SHA256]::Create()
     try {
-        $stream = [System.IO.File]::Open($Path, 'Open', 'ReadWrite', 'None')
-        return $false
-    } catch {
-        return $true
+        $bytes = $algorithm.ComputeHash($stream)
+        return ([System.BitConverter]::ToString($bytes)).Replace("-", "").ToLowerInvariant()
     } finally {
-        if ($null -ne $stream) {
-            $stream.Dispose()
-        }
+        $algorithm.Dispose()
+        $stream.Dispose()
     }
 }
 
-$repoRoot = Split-Path -Parent $PSScriptRoot
+$repoRoot = (Resolve-Path -LiteralPath (Split-Path -Parent $PSScriptRoot)).Path
 $cargo = Get-CargoPath
-$targetDir = Join-Path $env:LOCALAPPDATA "misku-native-views\cargo-target"
-$portableDir = Join-Path $repoRoot "portable"
-$releaseExe = Join-Path $targetDir "release\misku-native-views.exe"
-$appsConfig = Join-Path $repoRoot "apps.toml"
-$iconsDir = Join-Path $repoRoot "icons"
-$portableExe = Join-Path $portableDir "misku-native-views.exe"
+$targetDir = Join-Path $repoRoot "target\pnpm-package"
+$releaseExe = Join-Path $targetDir "$TargetTriple\release\misku-native-views.exe"
+$runtimeDir = Join-Path $repoRoot "runtime"
+$runtimeExe = Join-Path $runtimeDir "misku-native-views.exe"
+$packageJsonPath = Join-Path $repoRoot "package.json"
 
-if (-not (Test-Path -LiteralPath $appsConfig)) {
-    throw "No encontre apps.toml en $repoRoot."
+if (-not (Test-Path -LiteralPath $packageJsonPath -PathType Leaf)) {
+    throw "No encontre package.json en $repoRoot."
 }
 
-New-Item -ItemType Directory -Path $targetDir -Force | Out-Null
+$packageJson = Get-Content -LiteralPath $packageJsonPath -Raw | ConvertFrom-Json
 $env:CARGO_TARGET_DIR = $targetDir
-$env:PATH = "$(Split-Path $cargo);$env:PATH"
+$env:PATH = "$(Split-Path -Parent $cargo);$env:PATH"
 
 Initialize-MsvcBuildEnvironment | Out-Null
 
 Push-Location $repoRoot
 try {
-    & $cargo build --release -p misku-native-views
+    $metadataText = (& $cargo metadata --locked --no-deps --format-version 1) -join "`n"
     if ($LASTEXITCODE -ne 0) {
-        throw "Cargo build fallo con codigo $LASTEXITCODE."
+        throw "cargo metadata --locked fallo con codigo $LASTEXITCODE."
+    }
+
+    $metadata = $metadataText | ConvertFrom-Json
+    $nativePackage = @($metadata.packages) |
+        Where-Object { $_.name -eq "misku-native-views" } |
+        Select-Object -First 1
+    if ($null -eq $nativePackage) {
+        throw "No encontre el paquete Rust misku-native-views en el workspace."
+    }
+    if ([string] $nativePackage.version -ne [string] $packageJson.version) {
+        throw "Las versiones no coinciden: package.json=$($packageJson.version), Cargo.toml=$($nativePackage.version)."
+    }
+
+    & $cargo build `
+        --locked `
+        --release `
+        --target $TargetTriple `
+        --package misku-native-views
+    if ($LASTEXITCODE -ne 0) {
+        throw "cargo build --locked fallo con codigo $LASTEXITCODE."
     }
 } finally {
     Pop-Location
 }
 
-if (-not (Test-Path -LiteralPath $releaseExe)) {
-    throw "Cargo termino, pero no encontre $releaseExe."
+if (-not (Test-Path -LiteralPath $releaseExe -PathType Leaf)) {
+    throw "Cargo termino, pero no encontre el ejecutable esperado: $releaseExe."
 }
 
-New-Item -ItemType Directory -Path $portableDir -Force | Out-Null
+New-Item -ItemType Directory -Path $runtimeDir -Force | Out-Null
+[System.IO.File]::Copy($releaseExe, $runtimeExe, $true)
 
-if (Test-FileLocked -Path $portableExe) {
-    throw "Cierra portable\misku-native-views.exe antes de empaquetar."
-}
-
-Copy-Item -LiteralPath $releaseExe -Destination $portableExe -Force
-Copy-Item -LiteralPath $appsConfig -Destination (Join-Path $portableDir "apps.toml") -Force
-
-if (Test-Path -LiteralPath $iconsDir) {
-    Copy-Item -LiteralPath $iconsDir -Destination $portableDir -Recurse -Force
-}
-
-Write-Output "PackagePortable=$portableDir"
-Write-Output "PackageExe=$portableExe"
+$runtimeHash = Get-Sha256 -Path $runtimeExe
+Write-Output "PackageRuntime=$runtimeExe"
+Write-Output "PackageRuntimeSha256=$runtimeHash"
+Write-Output "PackageTarget=$TargetTriple"

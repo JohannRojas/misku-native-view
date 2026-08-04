@@ -1,33 +1,177 @@
 # Misku Native Views
 
-Misku Native Views is a small Windows-first launcher that turns configured web URLs into lightweight desktop apps using Rust, Tauri 2, and Microsoft Edge WebView2.
+Misku Native Views convierte URLs en aplicaciones de escritorio independientes para Windows mediante Tauri 2 y Microsoft Edge WebView2. El comando público del paquete es y seguirá siendo:
 
-It is inspired by tools like Pake, but keeps the workflow simple: edit `apps.toml`, build portable executables, and optionally install Start Menu shortcuts.
+```powershell
+misku-nv
+```
 
-## Features
+## Modelo de aplicaciones
 
-- Multiple web apps from one `apps.toml` file.
-- One portable `.exe` copy per app id.
-- Isolated WebView2 profile directories per app.
-- Custom window and shortcut icons.
-- CLI command to add or update apps by URL.
-- Optional Start Menu shortcut installation.
-- Cargo target output outside the repo to avoid OneDrive lock/sync issues.
+Cada creación genera una instancia nueva, incluso si la URL ya existe:
 
-## Requirements
+```powershell
+misku-nv https://github.com/openai
+misku-nv https://github.com/openai
+```
 
-- Windows 11.
-- Rust stable with the MSVC toolchain.
-- Microsoft C++ Build Tools with Desktop development with C++.
+Las dos aplicaciones anteriores tienen UUID, perfil WebView2, manifiesto, estado de ventana y acceso directo diferentes. El `id` es un alias legible; el UUID es la identidad estable de la aplicación y no cambia al actualizarla.
+
+Una instalación nueva administrada usa, por defecto, esta estructura:
+
+```text
+%LOCALAPPDATA%\Misku Native Views\
+├── apps.toml
+├── icons\
+│   └── <uuid>-<asset-id>.ico
+├── apps\
+│   └── <uuid>\
+│       ├── app.toml
+│       ├── install.json
+│       └── icons\
+│           └── <uuid>.ico
+└── runtimes\
+    └── <version-hash>\
+        └── misku-native-views.exe
+```
+
+Los accesos directos se instalan por separado en el menú Inicio del usuario. Una actualización del paquete puede añadir un runtime versionado sin sobrescribir el ejecutable que usa otra instancia.
+
+## Requisitos
+
+Para usar el paquete publicado:
+
+- Windows 10 u 11 x64.
 - Microsoft Edge WebView2 Evergreen Runtime.
-- Python + Pillow only if you want to convert `.webp`, `.png`, or `.jpg` files into `.ico` icons.
 
-## Configure Apps
+Para desarrollar o compilar desde el repositorio:
 
-Apps live in `apps.toml`:
+- Rust 1.88 o posterior con el toolchain MSVC.
+- Microsoft Visual Studio Build Tools con “Desktop development with C++”.
+- Node.js y pnpm para empaquetar el CLI.
+- Python y Pillow solamente para convertir imágenes a `.ico`.
+
+## Instalar el CLI
+
+```powershell
+pnpm install -g misku-native-view-cli
+misku-nv --version
+```
+
+Para probar un tarball local:
+
+```powershell
+pnpm pack
+pnpm install -g .\misku-native-view-cli-<version>.tgz
+```
+
+El paquete incluye el wrapper `misku-nv`, el runtime nativo y el administrador seguro de accesos directos. Un usuario final no necesita Cargo ni Visual Studio.
+
+## Uso
+
+Crear y abrir una aplicación:
+
+```powershell
+misku-nv https://github.com --name GitHub
+```
+
+Crear sin abrir:
+
+```powershell
+misku-nv https://github.com/openai --name "GitHub OpenAI" --no-open
+```
+
+Por defecto, el CLI descubre el favicon de la página, lo valida y lo normaliza a un `.ico` multirresolución. El recurso administrado usa un nombre versionado en `icons/<uuid>-<asset-id>.ico` y cada app recibe su propia copia estable en `apps/<uuid>/icons/<uuid>.ico`. Si la página está offline o no ofrece un PNG/ICO válido, la creación continúa con el icono genérico. Para evitar cualquier consulta:
+
+```powershell
+misku-nv https://example.com --no-favicon
+```
+
+Crear varias aplicaciones en una operación:
+
+```powershell
+misku-nv create https://github.com/openai https://github.com/microsoft
+```
+
+`create`, `add` y la forma abreviada con una URL siempre crean una instancia. Nunca actualizan implícitamente una aplicación existente. Para modificar una instancia se requiere `update`:
+
+```powershell
+misku-nv --list
+misku-nv --list --json
+misku-nv update <uuid> --name "Nuevo nombre"
+misku-nv update <uuid> --url https://example.com/nueva-ruta
+misku-nv update <uuid> --refresh-icon
+misku-nv update <uuid> --url https://example.com/otra --refresh-icon
+misku-nv remove <uuid>
+misku-nv remove <uuid> --purge-data
+```
+
+`remove` conserva cookies y sesiones salvo que se indique `--purge-data`. Es preferible usar el UUID en automatizaciones; el alias `id` también puede usarse mientras sea inequívoco.
+
+Para reparar manifiestos y accesos directos administrados:
+
+```powershell
+misku-nv repair
+```
+
+Para usar un registro específico:
+
+```powershell
+misku-nv --config C:\ruta\apps.toml --list
+```
+
+El CLI instalado usa su registro administrado en `%LOCALAPPDATA%`; no adopta silenciosamente un `apps.toml` del directorio de trabajo.
+
+Al actualizar desde la versión 0.1, si todavía no existe un registro local pero sí `%APPDATA%\Misku Native Views\apps.toml`, el CLI continúa usando ese registro legado. Sus iconos y sesiones WebView aisladas permanecen en la ubicación anterior; las apps nuevas usan almacenamiento local por UUID. Los perfiles legados con almacenamiento compartido se migran a aislamiento y pueden requerir iniciar sesión de nuevo. `--purge-data` revisa ambas ubicaciones.
+
+## Seguridad y navegación
+
+- Se acepta HTTPS por defecto.
+- HTTP requiere `--allow-http` y solamente se admite para `localhost` o direcciones loopback.
+- Las URLs con credenciales embebidas se rechazan.
+- La WebView permanece en el origen configurado y en los orígenes añadidos con `--allow-origin`.
+- Los enlaces HTTPS hacia otros orígenes se abren en el navegador del sistema.
+- Esquemas peligrosos se bloquean. Todas las ventanas nuevas HTTPS se abren en el navegador del sistema, incluso si su origen está permitido; los flujos OAuth que dependan de compartir cookies mediante popup pueden requerir una integración específica.
+- Cada UUID usa un directorio de datos WebView y un archivo de estado de ventana propios.
+- El registro se escribe de forma atómica y se bloquea durante las mutaciones.
+- Iconos, alias y rutas administradas se validan antes de crear o eliminar archivos.
+- El favicon usa peticiones sin cookies ni credenciales, redirects manuales, DNS fijado, límites de tiempo/tamaño y únicamente recursos del mismo origen.
+- HTTPS es obligatorio para favicons públicos; HTTP solo funciona para loopback con `--allow-http`. Un fallo de descarga nunca impide crear la app.
+
+Ejemplo de origen adicional:
+
+```powershell
+misku-nv https://example.com --allow-origin https://login.example.com
+```
+
+## Desarrollo
+
+El helper de desarrollo pasa explícitamente el `apps.toml` del repositorio:
+
+```powershell
+.\scripts\misku.ps1 --list
+.\scripts\misku.ps1 create https://example.com
+.\scripts\misku.ps1 <id-o-uuid>
+```
+
+También se puede usar el entorno de compilación directamente:
+
+```powershell
+.\scripts\dev.ps1 check --workspace --locked
+.\scripts\dev.ps1 test --workspace --locked
+.\scripts\dev.ps1 run -p misku-native-views "--" --config .\apps.toml --list
+```
+
+## Registro `apps.toml`
+
+El registro admite configuraciones heredadas sin identidad explícita; al cargarlas asigna una identidad estable y, en la siguiente escritura, las migra al esquema actual.
 
 ```toml
+schema_version = 2
+
 [[apps]]
+instance_id = "11111111-1111-4111-8111-111111111111"
+profile_key = "11111111-1111-4111-8111-111111111111"
 id = "tftacademy"
 name = "TFT Academy"
 url = "https://tftacademy.com/tierlist/comps/"
@@ -42,154 +186,78 @@ resizable = true
 zoom_hotkeys_enabled = true
 ```
 
-Supported fields:
+No reutilices manualmente `instance_id` ni `profile_key`: deben ser únicos. Para crear perfiles usa `misku-nv`; la edición manual se reserva para opciones visuales avanzadas.
 
-- `id`: short identifier used by the CLI and executable name.
-- `name`: window title.
-- `url`: `https://` or `http://` URL.
-- `icon`: optional `.ico` or `.png`, relative to `apps.toml`.
-- `width`, `height`: initial window size.
-- `min_width`, `min_height`: minimum window size.
-- `isolated_profile`: separates cookies, cache, and sessions per app.
-- `devtools`: enables DevTools for that app.
-- `user_agent`: optional custom user agent.
-- `resizable`: allows resizing the window.
-- `zoom_hotkeys_enabled`: enables native zoom shortcuts.
+Campos principales:
 
-## CLI
+- `instance_id`: UUID inmutable de la instancia.
+- `profile_key`: clave inmutable del almacenamiento WebView.
+- `id`: alias legible y único dentro del registro.
+- `name`: título de ventana.
+- `url`: URL inicial.
+- `icon`: `.ico` o `.png` relativo al registro.
+- `allowed_origins`: orígenes adicionales permitidos dentro de la WebView.
+- `allow_insecure_http`: opt-in de HTTP loopback.
+- `width`, `height`, `min_width`, `min_height`: dimensiones de ventana.
+- `isolated_profile`: debe permanecer en `true`; el esquema actual rechaza almacenamiento WebView compartido.
+- `devtools`, `user_agent`, `resizable`, `zoom_hotkeys_enabled`: opciones del runtime.
 
-Use the helper script during development:
+## Portables
 
-```powershell
-.\scripts\misku.ps1 --list
-.\scripts\misku.ps1 add https://chatgpt.com
-.\scripts\misku.ps1 add --id tftacademy --name "TFT Academy" https://tftacademy.com/tierlist/comps/
-.\scripts\misku.ps1 --app tftacademy
-```
-
-`add` creates a new profile when the app does not exist. If the generated `id`, explicit `--id`, or exact URL already exists, it updates the existing profile instead of creating a duplicate.
-
-For raw Cargo commands, use `scripts/dev.ps1` so Visual Studio Build Tools are loaded and Cargo output goes to `%LOCALAPPDATA%`:
-
-```powershell
-.\scripts\dev.ps1 check
-.\scripts\dev.ps1 run -p misku-native-views "--" --list
-```
-
-## Build Portable Apps
-
-Generate `portable/` with one executable per configured app:
+Genera un portable por UUID:
 
 ```powershell
 .\scripts\build-portable.ps1
 ```
 
-Run an app directly:
+La salida no depende del alias ni del host de la URL:
 
-```powershell
-.\portable\tftacademy.exe
+```text
+portable\
+├── apps.json
+└── <uuid>\
+    ├── misku-native-views.exe
+    ├── apps.toml
+    └── icons\
+        └── <uuid>.ico
 ```
 
-If a profile defines `icon`, the build script also creates a matching `.lnk` shortcut with that icon. The `.exe` keeps the base embedded app icon; use the generated shortcut for the per-app Explorer/Start Menu icon.
+`apps.json` proviene de `--list --json` y cada `apps.toml` se genera con el comando nativo `export`; el script no interpreta TOML con expresiones regulares. Por ello, dos rutas del mismo host o dos copias de la misma URL siguen siendo portables separados.
 
-## Package And Install With pnpm
-
-Build the CLI package and create a local pnpm-installable tarball:
+Ejecuta una instancia directamente:
 
 ```powershell
-pnpm pack
+.\portable\<uuid>\misku-native-views.exe
 ```
 
-`pnpm pack` runs `scripts/build-pnpm-package.ps1` first. The packed package includes the `misku-nv` wrapper, the prebuilt native executable, the default `apps.toml`, icons. The `misku-nv` wrapper prepares `%APPDATA%\Misku Native Views` on first use. End users do not need Rust, Cargo, or Visual Studio Build Tools to install the CLI package.
-
-Install the published package globally:
-
-```powershell
-pnpm install -g misku-native-view-cli
-```
-
-Or install the local tarball generated by `pnpm pack`:
-
-```powershell
-pnpm install -g .\misku-native-view-cli-0.1.0.tgz
-```
-
-Use the installed CLI:
-
-```powershell
-misku-nv https://github.com --name GitHub
-misku-nv --list
-misku-nv github
-```
-
-The URL shorthand creates or updates a profile and opens it immediately. Add `--no-open` if you only want to save the profile:
-
-```powershell
-misku-nv https://github.com --name GitHub --no-open
-```
-
-When installed through pnpm, `misku-nv` stores the default editable config in `%APPDATA%\Misku Native Views\apps.toml`. If you run it from a folder that already contains `apps.toml`, or pass `--config <path>`, that config is used instead.
-
-## GitHub CI/CD
-
-The repository includes two GitHub Actions workflows:
-
-- `CI`: runs on every push, pull request, and manual dispatch. It builds the Rust/Tauri executable on Windows, packs the pnpm package, installs the generated tarball globally with pnpm, and smoke-tests `misku-nv`.
-- `Publish package`: runs on pushes to `main` or `master`, tags matching `v*`, and manual dispatch. It builds and smoke-tests the package, publishes it to the npm registry, then downloads the published version with pnpm and smoke-tests `misku-nv`.
-
-To enable publishing, create a GitHub repository secret named `NPM_TOKEN` with an npm automation token that can publish `misku-native-view-cli`.
-
-Pushes to `main` or `master` publish an automatic version like `0.1.0-ci.<run>.<attempt>` with the `latest` dist-tag, so this command installs the newest pushed build:
-
-```powershell
-pnpm install -g misku-native-view-cli
-```
-
-Tags such as `v0.1.0` publish that exact stable version as `latest`.
-
-## Start Menu Shortcuts
-
-Install generated shortcuts for the current Windows user:
+Los `.lnk` no se precalculan dentro de `portable`. Para crear accesos directos en su destino final:
 
 ```powershell
 .\scripts\install-start-menu.ps1
-```
-
-Remove them:
-
-```powershell
 .\scripts\install-start-menu.ps1 -Uninstall
 ```
 
-## Icons
+El desinstalador solo elimina los `.lnk` registrados como propios y elimina su carpeta administrada únicamente si queda vacía; no realiza borrados recursivos.
 
-Convert image files into multi-size Windows `.ico` files:
+## Iconos
+
+Sin `--icon`, cada creación intenta usar `link rel="icon"`, `shortcut icon`, `apple-touch-icon`, el Web Manifest y finalmente `/favicon.ico`. El resultado queda asociado al UUID y persiste durante `repair`, actualizaciones y reinicios. Los nombres centrales versionados permiten reemplazar un icono de forma atómica, mientras que la copia instalada conserva la ruta `apps/<uuid>/icons/<uuid>.ico` que usa el acceso directo. `--icon` siempre tiene prioridad; `--refresh-icon` reemplaza explícitamente el favicon sin cambiar el UUID, perfil ni sesiones.
+
+La descarga acepta PNG o ICO y Rust vuelve a decodificar la imagen antes de generar el ICO que consumen Tauri y Windows. Para convertir manualmente otros formatos:
 
 ```powershell
 .\scripts\convert-icon.ps1 .\downloads\logo.webp .\icons\myapp.ico
-```
-
-Use a solid padding background when needed:
-
-```powershell
 .\scripts\convert-icon.ps1 .\downloads\logo.webp .\icons\myapp.ico -Background "#FFFFFF"
 ```
 
-Then reference the icon from `apps.toml`:
+Después impórtala mediante el CLI:
 
-```toml
-icon = "icons/myapp.ico"
+```powershell
+misku-nv https://example.com --icon .\icons\myapp.ico
 ```
 
-## Publishing Notes
+## CI y publicación
 
-The repository intentionally ignores generated and local-only files such as:
+Los workflows de GitHub compilan y prueban el runtime, empaquetan el tarball de pnpm y ejecutan una prueba de humo del comando `misku-nv`. La publicación requiere el secreto `NPM_TOKEN`.
 
-- `target/`
-- `src-tauri/target/`
-- `portable/`
-- `screenshots/`
-- `.env` and `.env.*`
-- logs
-
-Do not commit private sessions, generated portable executables, local screenshots, or environment files.
+No deben versionarse sesiones privadas ni resultados generados como `target/`, `portable/`, `runtime/`, `screenshots/`, `artifacts/`, `.env*` o logs.

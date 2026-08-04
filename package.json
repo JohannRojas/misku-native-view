@@ -1,7 +1,7 @@
 {
   "name": "misku-native-view-cli",
-  "version": "0.1.0",
-  "description": "Installable CLI for launching websites as native Windows WebView apps",
+  "version": "0.2.0",
+  "description": "Create isolated native Windows web apps from URLs",
   "license": "UNLICENSED",
   "type": "commonjs",
   "os": [
@@ -19,13 +19,14 @@
     "misku-native-views": "./bin/misku.js"
   },
   "files": [
-    "bin/",
-    "portable/misku-native-views.exe",
-    "portable/apps.toml",
-    "portable/icons/",
+    "bin/favicon.js",
+    "bin/misku.js",
+    "runtime/misku-native-views.exe",
+    "scripts/manage-shortcut.ps1",
     "README.md"
   ],
   "scripts": {
+    "test": "node --test",
     "prepack": "powershell -NoProfile -ExecutionPolicy Bypass -File ./scripts/build-pnpm-package.ps1"
   },
   "keywords": [

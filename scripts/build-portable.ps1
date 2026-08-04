@@ -1,13 +1,15 @@
+[CmdletBinding()]
 param(
     [switch] $ReleaseOnly
 )
 
 $ErrorActionPreference = "Stop"
+Set-StrictMode -Version 3.0
 
 function Test-FileLocked {
     param([Parameter(Mandatory = $true)][string] $Path)
 
-    if (-not (Test-Path $Path)) {
+    if (-not (Test-Path -LiteralPath $Path -PathType Leaf)) {
         return $false
     }
 
@@ -15,202 +17,262 @@ function Test-FileLocked {
     try {
         $stream = [System.IO.File]::Open($Path, 'Open', 'ReadWrite', 'None')
         return $false
-    } catch {
+    }
+    catch {
         return $true
-    } finally {
+    }
+    finally {
         if ($null -ne $stream) {
             $stream.Dispose()
         }
     }
 }
 
-function Get-AppProfiles {
+function Test-ReparsePoint {
     param([Parameter(Mandatory = $true)][string] $Path)
 
-    $profiles = @()
-    $current = $null
-
-    foreach ($line in Get-Content -Path $Path) {
-        if ($line -match '^\s*\[\[apps\]\]\s*$') {
-            if ($null -ne $current -and $current.Id) {
-                $profiles += [pscustomobject]$current
-            }
-            $current = @{ Id = $null; Icon = $null }
-            continue
-        }
-
-        if ($null -eq $current) {
-            continue
-        }
-
-        if ($line -match '^\s*id\s*=\s*"([^"]+)"') {
-            $current.Id = $Matches[1]
-        } elseif ($line -match '^\s*icon\s*=\s*"([^"]+)"') {
-            $current.Icon = $Matches[1]
-        }
+    if (-not (Test-Path -LiteralPath $Path)) {
+        return $false
     }
 
-    if ($null -ne $current -and $current.Id) {
-        $profiles += [pscustomobject]$current
-    }
-
-    return $profiles
+    $item = Get-Item -LiteralPath $Path -Force
+    return [bool]($item.Attributes -band [System.IO.FileAttributes]::ReparsePoint)
 }
 
-function Resolve-PortableIconPath {
+function Get-DirectChildPath {
     param(
-        [Parameter(Mandatory = $true)][string] $RepoRoot,
-        [Parameter(Mandatory = $true)][string] $PortableDir,
-        [AllowNull()][string] $Icon
+        [Parameter(Mandatory = $true)][string] $Root,
+        [Parameter(Mandatory = $true)][string] $Leaf
     )
 
-    if ([string]::IsNullOrWhiteSpace($Icon)) {
-        return $null
+    if ([string]::IsNullOrWhiteSpace($Leaf) -or
+        $Leaf -ne [System.IO.Path]::GetFileName($Leaf) -or
+        $Leaf -in @(".", "..")) {
+        throw "Nombre de directorio portable invalido: $Leaf"
     }
 
-    if ([System.IO.Path]::IsPathRooted($Icon)) {
-        return $Icon
+    $rootPath = [System.IO.Path]::GetFullPath($Root).TrimEnd('\', '/')
+    $candidate = [System.IO.Path]::GetFullPath((Join-Path $rootPath $Leaf))
+    $prefix = "$rootPath$([System.IO.Path]::DirectorySeparatorChar)"
+    if (-not $candidate.StartsWith($prefix, [System.StringComparison]::OrdinalIgnoreCase)) {
+        throw "Ruta portable fuera del directorio administrado: $candidate"
     }
 
-    $source = Join-Path $RepoRoot $Icon
-    if (-not (Test-Path $source)) {
-        Write-Warning "No encontre el icono configurado: $Icon"
-        return $null
-    }
-
-    $destination = Join-Path $PortableDir $Icon
-    $destinationDir = Split-Path -Parent $destination
-    New-Item -ItemType Directory -Path $destinationDir -Force | Out-Null
-    Copy-Item -Path $source -Destination $destination -Force
-    return $destination
+    return $candidate
 }
 
-function New-AppShortcut {
+function Remove-GeneratedUuidDirectory {
     param(
-        [Parameter(Mandatory = $true)][string] $ShortcutPath,
-        [Parameter(Mandatory = $true)][string] $TargetPath,
-        [Parameter(Mandatory = $true)][string] $WorkingDirectory,
-        [AllowNull()][string] $IconPath
+        [Parameter(Mandatory = $true)][string] $PortableRoot,
+        [Parameter(Mandatory = $true)][System.IO.DirectoryInfo] $Directory
     )
 
-    $resolvedTargetPath = (Resolve-Path -LiteralPath $TargetPath).Path
-    $resolvedWorkingDirectory = (Resolve-Path -LiteralPath $WorkingDirectory).Path
-
-    $shell = New-Object -ComObject WScript.Shell
-    $shortcut = $shell.CreateShortcut($ShortcutPath)
-    $shortcut.TargetPath = $resolvedTargetPath
-    $shortcut.WorkingDirectory = $resolvedWorkingDirectory
-    if (-not [string]::IsNullOrWhiteSpace($IconPath) -and (Test-Path $IconPath)) {
-        $shortcut.IconLocation = "$IconPath,0"
+    $parsed = [System.Guid]::Empty
+    if (-not [System.Guid]::TryParse($Directory.Name, [ref]$parsed) -or
+        $parsed.ToString("D") -ne $Directory.Name.ToLowerInvariant()) {
+        throw "Se rechazo borrar un directorio que no tiene nombre UUID canonico: $($Directory.FullName)"
     }
-    $shortcut.Save()
+
+    $expected = Get-DirectChildPath -Root $PortableRoot -Leaf $Directory.Name
+    if (-not $Directory.FullName.Equals($expected, [System.StringComparison]::OrdinalIgnoreCase)) {
+        throw "Se rechazo borrar una ruta portable inesperada: $($Directory.FullName)"
+    }
+    if (Test-ReparsePoint -Path $Directory.FullName) {
+        throw "Se rechazo borrar un enlace o reparse point: $($Directory.FullName)"
+    }
+
+    Remove-Item -LiteralPath $Directory.FullName -Recurse -Force
 }
 
-$repoRoot = Split-Path -Parent $PSScriptRoot
-$cargo = Join-Path $env:USERPROFILE ".cargo\bin\cargo.exe"
-$vsInstallPath = "C:\Program Files (x86)\Microsoft Visual Studio\2022\BuildTools"
-$devShell = Join-Path $vsInstallPath "Common7\Tools\Launch-VsDevShell.ps1"
+function Invoke-NativeJson {
+    param(
+        [Parameter(Mandatory = $true)][string] $Executable,
+        [Parameter(Mandatory = $true)][string[]] $Arguments,
+        [Parameter(Mandatory = $true)][string] $Operation
+    )
+
+    $lines = & $Executable @Arguments
+    $exitCode = $LASTEXITCODE
+    if ($exitCode -ne 0) {
+        throw "$Operation fallo con codigo $exitCode."
+    }
+
+    $json = ($lines -join [Environment]::NewLine).Trim()
+    if ([string]::IsNullOrWhiteSpace($json)) {
+        throw "$Operation no devolvio JSON."
+    }
+
+    try {
+        $value = ConvertFrom-Json -InputObject $json
+    }
+    catch {
+        throw "$Operation devolvio JSON invalido: $($_.Exception.Message)"
+    }
+
+    return [pscustomobject]@{
+        Json = $json
+        Value = $value
+    }
+}
+
+$repoRoot = (Resolve-Path -LiteralPath (Split-Path -Parent $PSScriptRoot)).Path
+$appsConfig = (Resolve-Path -LiteralPath (Join-Path $repoRoot "apps.toml")).Path
+$portableDir = [System.IO.Path]::GetFullPath((Join-Path $repoRoot "portable"))
 $targetDir = Join-Path $env:LOCALAPPDATA "misku-native-views\cargo-target"
-$portableDir = Join-Path $repoRoot "portable"
-$releaseExe = Join-Path $targetDir "release\misku-native-views.exe"
-$appsConfig = Join-Path $repoRoot "apps.toml"
 
-if (-not (Test-Path $cargo)) {
-    throw "No encontre Cargo en $cargo. Instala Rust o agrega Cargo al PATH."
-}
+. (Join-Path $PSScriptRoot "build-env.ps1")
 
-if (-not (Test-Path $devShell)) {
-    throw "No encontre Visual Studio Build Tools en $vsInstallPath."
-}
-
-if (-not (Test-Path $appsConfig)) {
-    throw "No encontre apps.toml en $repoRoot."
-}
-
+$cargo = Get-CargoPath
 New-Item -ItemType Directory -Path $targetDir -Force | Out-Null
 $env:CARGO_TARGET_DIR = $targetDir
-$env:PATH = "$(Split-Path $cargo);$env:PATH"
-
-. $devShell -VsInstallationPath $vsInstallPath -Arch amd64 -HostArch amd64
+$env:PATH = "$(Split-Path -Parent $cargo);$env:PATH"
+$null = Initialize-MsvcBuildEnvironment
 
 Push-Location $repoRoot
 try {
-    & $cargo build --release -p misku-native-views
+    & $cargo build --locked --release --package misku-native-views
     if ($LASTEXITCODE -ne 0) {
         throw "Cargo build fallo con codigo $LASTEXITCODE."
     }
-} finally {
+}
+finally {
     Pop-Location
 }
 
-if (-not (Test-Path $releaseExe)) {
+$releaseExe = Join-Path $targetDir "release\misku-native-views.exe"
+if (-not (Test-Path -LiteralPath $releaseExe -PathType Leaf)) {
     throw "Cargo termino, pero no encontre $releaseExe."
 }
 
-$appProfiles = @(Get-AppProfiles -Path $appsConfig)
-$appIds = @($appProfiles | ForEach-Object { $_.Id })
-$expectedExeNames = @("misku-native-views.exe")
-$expectedExeNames += @($appIds | ForEach-Object { "$_.exe" })
-$expectedShortcutNames = @($appIds | ForEach-Object { "$_.lnk" })
+$listResult = Invoke-NativeJson `
+    -Executable $releaseExe `
+    -Arguments @("--config", $appsConfig, "--json", "--list") `
+    -Operation "La lectura del registro"
+$profiles = @($listResult.Value)
 
-New-Item -ItemType Directory -Path $portableDir -Force | Out-Null
+$profilesByUuid = @{}
+foreach ($profile in $profiles) {
+    if ($null -eq $profile -or $null -eq $profile.instance_id) {
+        throw "El runtime devolvio un perfil sin instance_id."
+    }
 
-$lockedTargets = foreach ($exeName in $expectedExeNames) {
-    $targetPath = Join-Path $portableDir $exeName
-    if (Test-FileLocked -Path $targetPath) {
-        $exeName
+    $parsedUuid = [System.Guid]::Empty
+    if (-not [System.Guid]::TryParse([string]$profile.instance_id, [ref]$parsedUuid)) {
+        throw "El runtime devolvio un instance_id invalido: $($profile.instance_id)"
+    }
+    $uuid = $parsedUuid.ToString("D")
+    if ($profilesByUuid.ContainsKey($uuid)) {
+        throw "El runtime devolvio un instance_id duplicado: $uuid"
+    }
+    $profilesByUuid[$uuid] = $profile
+}
+
+if (Test-Path -LiteralPath $portableDir) {
+    if (Test-ReparsePoint -Path $portableDir) {
+        throw "Se rechazo usar portable porque es un enlace o reparse point: $portableDir"
+    }
+
+    $lockedExecutables = @(
+        Get-ChildItem -LiteralPath $portableDir -Directory -Force |
+            Where-Object {
+                $candidateUuid = [System.Guid]::Empty
+                [System.Guid]::TryParse($_.Name, [ref]$candidateUuid)
+            } |
+            ForEach-Object {
+                $candidate = Join-Path $_.FullName "misku-native-views.exe"
+                if (Test-FileLocked -Path $candidate) {
+                    $candidate
+                }
+            }
+    )
+    if ($lockedExecutables.Count -gt 0) {
+        throw "Cierra estas apps antes de regenerar portable: $($lockedExecutables -join ', ')."
+    }
+}
+else {
+    New-Item -ItemType Directory -Path $portableDir | Out-Null
+}
+
+# Solo se eliminan directorios hijos cuyo nombre es un UUID canonico. Los reparse
+# points se rechazan y la pertenencia directa a portable se comprueba antes del
+# unico borrado recursivo del script.
+foreach ($directory in @(Get-ChildItem -LiteralPath $portableDir -Directory -Force)) {
+    $candidateUuid = [System.Guid]::Empty
+    if ([System.Guid]::TryParse($directory.Name, [ref]$candidateUuid)) {
+        Remove-GeneratedUuidDirectory -PortableRoot $portableDir -Directory $directory
     }
 }
 
-if ($lockedTargets.Count -gt 0) {
-    throw "Cierra estas apps antes de regenerar portable: $($lockedTargets -join ', ')."
+# Limpia solamente los dos archivos raiz exactos del formato heredado. Cualquier
+# otro archivo del usuario se preserva.
+foreach ($legacyName in @("misku-native-views.exe", "apps.toml")) {
+    $legacyPath = Join-Path $portableDir $legacyName
+    if (Test-Path -LiteralPath $legacyPath -PathType Leaf) {
+        Remove-Item -LiteralPath $legacyPath -Force
+    }
 }
 
-$staleExecutables = Get-ChildItem -Path $portableDir -Filter "*.exe" -File -ErrorAction SilentlyContinue |
-    Where-Object { $expectedExeNames -notcontains $_.Name }
-$staleShortcuts = Get-ChildItem -Path $portableDir -Filter "*.lnk" -File -ErrorAction SilentlyContinue |
-    Where-Object { $expectedShortcutNames -notcontains $_.Name }
+foreach ($uuid in @($profilesByUuid.Keys | Sort-Object)) {
+    $profile = $profilesByUuid[$uuid]
+    $appDir = Get-DirectChildPath -Root $portableDir -Leaf $uuid
+    New-Item -ItemType Directory -Path $appDir | Out-Null
 
-foreach ($exe in $staleExecutables) {
-    Remove-Item -LiteralPath $exe.FullName -Force
+    $portableExe = Join-Path $appDir "misku-native-views.exe"
+    $portableManifest = Join-Path $appDir "apps.toml"
+    Copy-Item -LiteralPath $releaseExe -Destination $portableExe
+
+    $exportResult = Invoke-NativeJson `
+        -Executable $releaseExe `
+        -Arguments @(
+            "--config", $appsConfig,
+            "--json",
+            "export", $uuid,
+            "--output", $portableManifest
+        ) `
+        -Operation "La exportacion de $uuid"
+
+    $exportOperations = @($exportResult.Value)
+    if ($exportOperations.Count -ne 1 -or
+        [string]$exportOperations[0].profile.instance_id -ne $uuid) {
+        throw "La exportacion de $uuid no confirmo la identidad esperada."
+    }
+    if (-not (Test-Path -LiteralPath $portableManifest -PathType Leaf)) {
+        throw "La exportacion de $uuid no genero $portableManifest."
+    }
 }
-foreach ($shortcut in $staleShortcuts) {
-    Remove-Item -LiteralPath $shortcut.FullName -Force
-}
 
-Copy-Item -Path $releaseExe -Destination (Join-Path $portableDir "misku-native-views.exe") -Force
-Copy-Item -Path $appsConfig -Destination (Join-Path $portableDir "apps.toml") -Force
-
-foreach ($profile in $appProfiles) {
-    $profileExe = Join-Path $portableDir "$($profile.Id).exe"
-    Copy-Item -Path $releaseExe -Destination $profileExe -Force
-
-    $portableIconPath = Resolve-PortableIconPath -RepoRoot $repoRoot -PortableDir $portableDir -Icon $profile.Icon
-    New-AppShortcut `
-        -ShortcutPath (Join-Path $portableDir "$($profile.Id).lnk") `
-        -TargetPath $profileExe `
-        -WorkingDirectory $portableDir `
-        -IconPath $portableIconPath
-}
+$indexJson = ConvertTo-Json -InputObject @($profiles) -Depth 10
+$utf8WithoutBom = New-Object System.Text.UTF8Encoding($false)
+[System.IO.File]::WriteAllText(
+    (Join-Path $portableDir "apps.json"),
+    "$indexJson$([Environment]::NewLine)",
+    $utf8WithoutBom
+)
 
 if (-not $ReleaseOnly) {
-    $readme = @"
+    $portableReadme = @"
 Misku Native Views portable
 
-Ejecutables:
-- misku-native-views.exe: abre el primer perfil de apps.toml o acepta --app <id>.
-- <id>.exe: abre automaticamente el perfil con ese id.
-- <id>.lnk: acceso directo con icono personalizado cuando apps.toml define icon.
+Cada directorio con nombre UUID es una aplicacion independiente:
+  <uuid>\misku-native-views.exe
 
-Puedes editar apps.toml y volver a ejecutar scripts\build-portable.ps1 para generar nuevas copias por perfil.
-El script tambien elimina ejecutables y accesos directos de perfiles que ya no existan en apps.toml.
-Cierra las apps portables antes de regenerar para que Windows permita reemplazar los .exe.
+El ejecutable usa el apps.toml de su propio directorio. apps.json es un indice
+generado desde la salida JSON del runtime nativo.
+
+Los accesos directos no se precalculan aqui. Ejecuta:
+  scripts\install-start-menu.ps1
+
+Cierra las apps portables antes de regenerarlas.
 "@
-    Set-Content -Path (Join-Path $portableDir "README.txt") -Encoding UTF8 -Value $readme
+    [System.IO.File]::WriteAllText(
+        (Join-Path $portableDir "README.txt"),
+        $portableReadme,
+        $utf8WithoutBom
+    )
 }
 
 Write-Output "Portable=$portableDir"
-Write-Output "Profiles=$($appIds -join ', ')"
-$removedItems = @($staleExecutables | ForEach-Object { $_.Name }) + @($staleShortcuts | ForEach-Object { $_.Name })
-Write-Output "Removed=$($removedItems -join ', ')"
-
+Write-Output "Profiles=$($profilesByUuid.Count)"
+foreach ($uuid in @($profilesByUuid.Keys | Sort-Object)) {
+    Write-Output "$uuid`t$($profilesByUuid[$uuid].id)`t$($profilesByUuid[$uuid].url)"
+}

@@ -2,6 +2,10 @@
   "name": "misku-native-view-cli",
   "version": "0.2.0",
   "description": "Create isolated native Windows web apps from URLs",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/JohannRojas/misku-native-view"
+  },
   "license": "UNLICENSED",
   "type": "commonjs",
   "os": [

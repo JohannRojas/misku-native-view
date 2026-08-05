@@ -1742,14 +1742,18 @@ dependencies = [
 
 [[package]]
 name = "misku-native-views"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
+ "image",
  "serde",
+ "serde_json",
  "tauri",
  "tauri-build",
  "tauri-plugin-window-state",
  "toml 0.8.2",
  "url",
+ "uuid",
+ "windows",
 ]
 
 [[package]]
@@ -2718,6 +2722,12 @@ dependencies = [
 ]
 
 [[package]]
+name = "sha1_smol"
+version = "1.0.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "bbfa15b3dddfee50a0fff136974b3e1bde555604ba463834a7eb7deb6417705d"
+
+[[package]]
 name = "sha2"
 version = "0.10.9"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3674,6 +3684,7 @@ dependencies = [
  "getrandom 0.4.3",
  "js-sys",
  "serde_core",
+ "sha1_smol",
  "wasm-bindgen",
 ]
 

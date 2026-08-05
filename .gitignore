@@ -7,5 +7,6 @@
 /.env.*
 *.log
 /portable/
+/runtime/
 /screenshots/
 /artifacts/

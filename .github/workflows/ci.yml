@@ -10,10 +10,34 @@ on:
 permissions:
   contents: read
 
+env:
+  CARGO_TERM_COLOR: always
+  RUST_TOOLCHAIN: "1.88.0"
+  RUST_TARGET: x86_64-pc-windows-msvc
+
 jobs:
-  package:
-    name: Build, pack, and smoke test
+  node-minimum:
+    name: Test minimum Node.js version
     runs-on: windows-latest
+    timeout-minutes: 10
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js 18
+        uses: actions/setup-node@v4
+        with:
+          node-version: "18"
+
+      - name: Test CLI and favicon helpers
+        shell: pwsh
+        run: node --test
+
+  validate-package:
+    name: Validate, pack, and smoke test
+    runs-on: windows-latest
+    timeout-minutes: 45
 
     steps:
       - name: Checkout
@@ -31,35 +55,47 @@ jobs:
           corepack prepare pnpm@11.7.0 --activate
           pnpm --version
 
-      - name: Setup Rust
+      - name: Setup pinned Rust toolchain
         shell: pwsh
         run: |
-          rustup toolchain install stable --profile minimal
-          rustup default stable
+          rustup toolchain install $env:RUST_TOOLCHAIN --profile minimal --component rustfmt --component clippy --target $env:RUST_TARGET
+          rustup default $env:RUST_TOOLCHAIN
+          rustc --version
           cargo --version
 
-      - name: Check Rust workspace
+      - name: Validate locked Rust workspace
         shell: pwsh
-        run: cargo check -p misku-native-views
+        run: |
+          . .\scripts\build-env.ps1
+          Initialize-MsvcBuildEnvironment | Out-Null
+          cargo fmt --all -- --check
+          cargo test --workspace --locked
+          cargo clippy --workspace --all-targets --locked -- -D warnings
 
-      - name: Pack CLI package
+      - name: Test Node CLI helpers
+        shell: pwsh
+        run: pnpm test
+
+      - name: Pack exact CLI tarball
         shell: pwsh
         run: |
           New-Item -ItemType Directory -Path artifacts -Force | Out-Null
           pnpm pack --pack-destination artifacts
+          $packages = @(Get-ChildItem -LiteralPath artifacts -Filter "*.tgz" -File)
+          if ($packages.Count -ne 1) {
+            throw "Esperaba exactamente un tarball, pero encontre $($packages.Count)."
+          }
 
-      - name: Smoke test installed CLI
+      - name: Smoke test installed tarball
         shell: pwsh
         run: |
-          $package = Get-ChildItem -LiteralPath artifacts -Filter "*.tgz" | Select-Object -First 1
-          if (-not $package) {
-            throw "No se genero ningun .tgz en artifacts."
-          }
+          $package = Get-ChildItem -LiteralPath artifacts -Filter "*.tgz" -File | Select-Object -First 1
           .\scripts\ci-smoke-test-package.ps1 -PackagePath $package.FullName
 
-      - name: Upload package artifact
+      - name: Upload tested package
         uses: actions/upload-artifact@v4
         with:
           name: misku-native-view-cli
           path: artifacts/*.tgz
           if-no-files-found: error
+          retention-days: 14

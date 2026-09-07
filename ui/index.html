@@ -1,0 +1,54 @@
+<!doctype html>
+<html lang="es">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <meta name="color-scheme" content="light dark">
+  <title>Misku Native Views</title>
+  <link rel="stylesheet" href="style.css">
+  <script src="manager.js" defer></script>
+</head>
+<body>
+  <main>
+    <header>
+      <div><p class="brand">MISKU <span>NATIVE VIEWS</span></p><h1>Tus apps</h1><p class="muted">Tus sitios, a un clic. Cada uno con su propia sesión.</p></div>
+      <button id="add" class="primary" type="button">Añadir app</button>
+    </header>
+    <label class="search-label" for="search">Buscar apps</label>
+    <div class="search"><input id="search" type="search" placeholder="Buscar por nombre o sitio" autocomplete="off"><kbd>Ctrl K</kbd></div>
+    <div id="error" role="alert" hidden><p id="error-summary"></p><details><summary>Ver detalles</summary><pre id="error-detail"></pre></details><button id="retry" type="button">Reintentar</button></div>
+    <p id="status" class="status" role="status" aria-live="polite">Cargando tus apps…</p>
+    <ul id="apps" aria-label="Aplicaciones"></ul>
+    <section id="empty" hidden><h2>Aquí comienza tu colección</h2><p>Añade una URL para abrirla como una app independiente.</p><button id="empty-add" class="primary" type="button">Añadir mi primera app</button></section>
+    <footer><span id="count"></span><span id="version">Misku Native Views</span></footer>
+  </main>
+  <dialog id="editor" aria-labelledby="editor-title">
+    <form id="app-form">
+      <h2 id="editor-title">Añadir app</h2>
+      <p class="muted">Se creará un acceso directo en el menú Inicio.</p>
+      <label for="url">Dirección del sitio</label>
+      <input id="url" name="url" type="text" inputmode="url" autocomplete="url" placeholder="https://ejemplo.com" required aria-describedby="url-help">
+      <p id="url-help" class="hint">El icono se completa automáticamente al abrir el sitio.</p>
+      <label for="name">Nombre <span class="optional">opcional</span></label>
+      <input id="name" name="name" type="text" maxlength="100" placeholder="Por ejemplo, Correo de trabajo">
+      <details class="advanced"><summary>Opciones avanzadas</summary>
+        <label class="check"><input id="suspend" type="checkbox"><span>Ahorrar recursos al minimizar</span></label>
+        <p class="hint">Pausa la página. Déjalo desactivado si necesitas música, llamadas o notificaciones en segundo plano. Los cambios se aplican al volver a abrir la app.</p>
+        <label for="origins">Orígenes adicionales para iniciar sesión</label>
+        <textarea id="origins" rows="2" placeholder="https://login.ejemplo.com"></textarea>
+        <p class="hint">Uno por línea. Solo estos sitios podrán abrirse dentro de la app.</p>
+        <label class="check"><input id="http" type="checkbox"><span>Permitir HTTP para localhost</span></label>
+      </details>
+      <label class="check" id="open-option"><input id="open-after" type="checkbox" checked><span>Abrir después de crear</span></label>
+      <p id="form-error" role="alert" hidden></p>
+      <div class="actions"><button id="cancel" type="button">Cancelar</button><button id="save" class="primary" type="submit">Crear app</button></div>
+    </form>
+  </dialog>
+  <dialog id="delete-dialog" aria-labelledby="delete-title">
+    <h2 id="delete-title">Eliminar app</h2><p id="delete-description"></p>
+    <p class="muted">Se quitarán de la lista y del menú Inicio. Las cookies y sesiones se conservan.</p>
+    <p id="delete-error" role="alert" hidden></p>
+    <div class="actions"><button id="delete-cancel" type="button">Conservar app</button><button id="delete-confirm" class="danger" type="button">Eliminar</button></div>
+  </dialog>
+</body>
+</html>

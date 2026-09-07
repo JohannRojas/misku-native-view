@@ -19,9 +19,67 @@ const {
   withConfig,
   writeJsonAtomic
 } = require("../bin/misku.js");
+const { finishCreation, profileFingerprint, readMaterializedProfile } = require('../bin/misku.js');
+const crypto = require('node:crypto');
 
 const FIRST_UUID = "18c70bd8-7a9c-4ded-8bb2-d680b2022c89";
 const SECOND_UUID = "03da2d54-d706-4fc3-8435-faa55b635bd2";
+
+test('abre antes de esperar al favicon y no reabre al terminarlo', async () => {
+  const events = [];
+  let finish;
+  const pending = new Promise(resolve => { finish = resolve; });
+  const result = [{ profile: { instance_id: FIRST_UUID } }];
+  const task = finishCreation({}, 'apps.toml', result, { open: true, favicon: true }, {
+    materialize: () => { events.push('install'); return { installed: [{}], failures: [] }; },
+    open: () => events.push('open'),
+    hydrate: async () => { events.push('favicon'); await pending; return { results: result, warnings: [], cleanupWarnings: [] }; }
+  });
+  assert.deepEqual(events, ['install', 'open', 'favicon']);
+  finish(); await task;
+  assert.deepEqual(events, ['install', 'open', 'favicon', 'install']);
+});
+
+test('--no-open termina el icono antes de instalar y nunca abre una ventana', async () => {
+  const events = [];
+  await finishCreation({}, 'apps.toml', [], { open: false, favicon: true }, {
+    materialize: () => { events.push('install'); return { installed: [], failures: [] }; },
+    open: () => events.push('open'),
+    hydrate: async () => { events.push('favicon'); return { results: [], warnings: [], cleanupWarnings: [] }; }
+  });
+  assert.deepEqual(events, ['favicon', 'install']);
+});
+
+test('reutiliza la instalación y descarta cachés alteradas, obsoletas o incompletas', () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'misku-cache-'));
+  try {
+    const context = getContext({ MISKU_NV_HOME: root, MISKU_NV_PROGRAMS_DIR: path.join(root, 'shortcuts') });
+    const appDir = path.join(context.appsDir, FIRST_UUID);
+    const version = require('../package.json').version;
+    const runtimeDir = path.join(context.runtimesDir, `${version}-0123456789ab`);
+    for (const directory of [appDir, runtimeDir, context.programsDir]) fs.mkdirSync(directory, { recursive: true });
+    const profile = { id: 'app', name: 'App', instance_id: FIRST_UUID, url: 'https://example.com' };
+    const manifest = path.join(appDir, 'app.toml');
+    const runtime = path.join(runtimeDir, 'misku-native-views.exe');
+    const shortcutName = 'App-app-18c70bd8';
+    const shortcutPath = path.join(context.programsDir, `${shortcutName}.lnk`);
+    fs.writeFileSync(manifest, 'original'); fs.writeFileSync(runtime, 'runtime'); fs.writeFileSync(shortcutPath, 'link');
+    const record = { instanceId: FIRST_UUID, sourceConfig: context.registry, sourceFingerprint: profileFingerprint(profile), runtimeVersion: version, runtime, manifest, shortcutPath, shortcutName, iconPath: runtime, manifestHash: crypto.createHash('sha256').update('original').digest('hex') };
+    const metadataPath = path.join(appDir, 'install.json');
+    fs.writeFileSync(metadataPath, JSON.stringify(record));
+    assert.deepEqual(readMaterializedProfile(context, context.registry, profile), record);
+    assert.equal(readMaterializedProfile(context, context.registry, { ...profile, url: 'https://other.com' }), null);
+    fs.writeFileSync(manifest, 'tampered');
+    assert.equal(readMaterializedProfile(context, context.registry, profile), null);
+    fs.writeFileSync(manifest, 'original');
+    fs.writeFileSync(metadataPath, JSON.stringify({ ...record, runtime: path.join(root, 'outside.exe') }));
+    assert.equal(readMaterializedProfile(context, context.registry, profile), null);
+    fs.writeFileSync(metadataPath, JSON.stringify(record)); fs.unlinkSync(shortcutPath);
+    assert.equal(readMaterializedProfile(context, context.registry, profile), null);
+    fs.writeFileSync(metadataPath, '{broken');
+    assert.equal(readMaterializedProfile(context, context.registry, profile), null);
+  } finally { fs.rmSync(root, { recursive: true, force: true }); }
+});
 
 test("parsea varias URLs como creaciones independientes y conserva duplicados", () => {
   const parsed = parseFriendlyUrlCommand([

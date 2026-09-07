@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-manager-open"
+description = "Enables the manager_open command without any pre-configured scope."
+commands.allow = ["manager_open"]
+
+[[permission]]
+identifier = "deny-manager-open"
+description = "Denies the manager_open command without any pre-configured scope."
+commands.deny = ["manager_open"]

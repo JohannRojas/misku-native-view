@@ -10,3 +10,5 @@
 /runtime/
 /screenshots/
 /artifacts/
+/playwright-report/
+/test-results/

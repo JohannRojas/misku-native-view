@@ -1,0 +1,108 @@
+name: Verify distribution
+on:
+  workflow_call:
+permissions:
+  contents: read
+env:
+  CARGO_TERM_COLOR: always
+  RUST_TOOLCHAIN: '1.88.0'
+  RUST_TARGET: x86_64-pc-windows-msvc
+defaults:
+  run:
+    shell: pwsh
+jobs:
+  node:
+    name: CLI Node ${{ matrix.node }}
+    runs-on: windows-2022
+    timeout-minutes: 10
+    strategy:
+      fail-fast: false
+      matrix:
+        node: ['18', '22', '24']
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+      - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
+        with:
+          node-version: ${{ matrix.node }}
+      - run: npm test
+  ui:
+    name: UI and accessibility
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+      - uses: pnpm/action-setup@f40ffcd9367d9f12939873eb1018b921a783ffaa # v4
+      - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
+        with:
+          node-version: '22'
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile --ignore-scripts
+      - run: pnpm exec playwright install --with-deps chromium
+      - run: pnpm test:ui
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        if: failure()
+        with:
+          name: ui-failure
+          path: |
+            playwright-report/
+            test-results/
+          retention-days: 7
+  windows:
+    name: Windows tests and distribution
+    runs-on: windows-2022
+    timeout-minutes: 60
+    env:
+      CARGO_TARGET_DIR: ${{ github.workspace }}/target
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+      - uses: pnpm/action-setup@f40ffcd9367d9f12939873eb1018b921a783ffaa # v4
+      - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
+        with:
+          node-version: '22'
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile --ignore-scripts
+      - name: Setup Rust and MSRV
+        run: |
+          $PSNativeCommandUseErrorActionPreference = $true
+          $ErrorActionPreference = 'Stop'
+          rustup toolchain install $env:RUST_TOOLCHAIN --profile minimal --component rustfmt --component clippy --target $env:RUST_TARGET
+          rustup default $env:RUST_TOOLCHAIN
+      - uses: Swatinem/rust-cache@49a0bdc70d2e1b713ca9e2869b211fcce03d3c1c # v2
+        with:
+          shared-key: windows-msrv
+          cache-on-failure: true
+      - name: Versions, formatting, Rust tests and lint
+        run: |
+          $PSNativeCommandUseErrorActionPreference = $true
+          $ErrorActionPreference = 'Stop'
+          . ./scripts/build-env.ps1
+          Initialize-MsvcBuildEnvironment | Out-Null
+          node scripts/release-policy.cjs
+          cargo fmt --all -- --check
+          cargo test --workspace --locked
+          cargo clippy --workspace --all-targets --locked -- -D warnings
+      - name: Build installer and exact npm package
+        run: ./scripts/build-distribution.ps1
+      - name: Test installed npm tarball
+        run: |
+          $package = Get-ChildItem artifacts/distribution/*.tgz | Select-Object -First 1
+          ./scripts/ci-smoke-test-package.ps1 -PackagePath $package.FullName
+      - name: Test native manager, IPC isolation and instance reuse
+        env:
+          MISKU_TEST_EXE: ${{ github.workspace }}/runtime/misku-native-views.exe
+        run: pnpm test:native
+      - name: Test Windows installer and uninstall
+        run: ./scripts/ci-smoke-test-installer.ps1
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: distribution
+          path: artifacts/distribution/*
+          if-no-files-found: error
+          retention-days: 14
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        if: failure()
+        with:
+          name: native-failure
+          path: artifacts/native-test/
+          if-no-files-found: ignore
+          retention-days: 7

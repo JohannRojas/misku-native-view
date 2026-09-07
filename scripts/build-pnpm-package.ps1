@@ -23,7 +23,7 @@ function Get-Sha256 {
 
 $repoRoot = (Resolve-Path -LiteralPath (Split-Path -Parent $PSScriptRoot)).Path
 $cargo = Get-CargoPath
-$targetDir = Join-Path $repoRoot "target\pnpm-package"
+$targetDir = if ($env:CARGO_TARGET_DIR) { [System.IO.Path]::GetFullPath($env:CARGO_TARGET_DIR) } else { Join-Path $repoRoot "target\pnpm-package" }
 $releaseExe = Join-Path $targetDir "$TargetTriple\release\misku-native-views.exe"
 $runtimeDir = Join-Path $repoRoot "runtime"
 $runtimeExe = Join-Path $runtimeDir "misku-native-views.exe"
@@ -57,6 +57,7 @@ try {
         throw "Las versiones no coinciden: package.json=$($packageJson.version), Cargo.toml=$($nativePackage.version)."
     }
 
+    if ($env:MISKU_SKIP_NATIVE_BUILD -ne "1") {
     & $cargo build `
         --locked `
         --release `
@@ -65,12 +66,17 @@ try {
     if ($LASTEXITCODE -ne 0) {
         throw "cargo build --locked fallo con codigo $LASTEXITCODE."
     }
+    }
 } finally {
     Pop-Location
 }
 
 if (-not (Test-Path -LiteralPath $releaseExe -PathType Leaf)) {
     throw "Cargo termino, pero no encontre el ejecutable esperado: $releaseExe."
+}
+$nativeVersion = (& node (Join-Path $PSScriptRoot 'read-native-version.cjs') $releaseExe) -join "`n"
+if ($LASTEXITCODE -ne 0 -or $nativeVersion.Trim() -ne "misku-nv $($packageJson.version)") {
+    throw "El runtime no corresponde a la version del paquete: $nativeVersion"
 }
 
 New-Item -ItemType Directory -Path $runtimeDir -Force | Out-Null

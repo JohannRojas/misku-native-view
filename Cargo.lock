@@ -1742,17 +1742,19 @@ dependencies = [
 
 [[package]]
 name = "misku-native-views"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "image",
  "serde",
  "serde_json",
+ "sha2",
  "tauri",
  "tauri-build",
  "tauri-plugin-window-state",
  "toml 0.8.2",
  "url",
  "uuid",
+ "webview2-com",
  "windows",
 ]
 

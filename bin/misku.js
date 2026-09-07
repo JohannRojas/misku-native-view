@@ -32,6 +32,8 @@ function printHelp() {
   console.log(`Misku Native Views CLI
 
 Uso:
+  misku-nv                 Abre el gestor gráfico
+  misku-nv manage          Abre el gestor gráfico
   misku-nv <url> [--name <nombre>] [--id <id>] [--icon <ruta>] [--no-open]
   misku-nv <id|uuid>
   misku-nv create <url> [url...]
@@ -53,6 +55,8 @@ Opciones de create:
   --no-open                 Crea e instala sin abrir.
 
 Opciones de update:
+  --suspend-on-minimize     Pausa al minimizar (puede interrumpir audio y avisos).
+  --keep-active             Mantiene activa la app al minimizar (predeterminado).
   --refresh-icon            Vuelve a descargar el favicon sin cambiar el UUID.
 
 El comando publico permanece: misku-nv`);
@@ -924,6 +928,66 @@ function validateInstallMetadata(metadata, instanceId) {
   return metadata;
 }
 
+function profileFingerprint(profile) {
+  return crypto.createHash("sha256").update(JSON.stringify(profile)).digest("hex");
+}
+
+// Opening an unchanged app must not export files or launch PowerShell. Treat the
+// installation record as a cache: anything missing, stale or unsafe rebuilds it.
+function readMaterializedProfile(context, configPath, profile) {
+  const instanceId = assertUuid(profile.instance_id);
+  const appDir = safeJoin(context.appsDir, instanceId);
+  try {
+    for (const directory of [context.home, context.appsDir, appDir]) {
+      if (!assertDirectoryNoLinksIfExists(directory, "instalacion")) return null;
+    }
+    const metadata = validateInstallMetadata(
+      readJsonIfExists(safeJoin(appDir, "install.json")), instanceId
+    );
+    if (!metadata || metadata.sourceConfig !== path.resolve(configPath) ||
+        metadata.sourceFingerprint !== profileFingerprint(profile) ||
+        metadata.runtimeVersion !== packageJson.version) return null;
+    const manifest = safeJoin(appDir, "app.toml");
+    const shortcut = safeJoin(context.programsDir, `${metadata.shortcutName}.lnk`);
+    if (metadata.manifest !== manifest || metadata.shortcutPath !== shortcut) return null;
+    const runtimeDir = path.dirname(metadata.runtime || "");
+    if (path.dirname(runtimeDir) !== path.resolve(context.runtimesDir) ||
+        !path.basename(runtimeDir).startsWith(`${packageJson.version}-`) ||
+        !/^[0-9a-f]{12}$/.test(path.basename(runtimeDir).split("-").at(-1)) ||
+        path.basename(metadata.runtime) !== "misku-native-views.exe") return null;
+    for (const directory of [context.runtimesDir, runtimeDir, context.programsDir]) {
+      if (!assertDirectoryNoLinksIfExists(directory, "instalacion")) return null;
+    }
+    for (const file of [manifest, metadata.runtime, shortcut]) assertRegularFile(file, "instalacion");
+    if (metadata.manifestHash !== fileSha256(manifest)) return null;
+    if (metadata.iconPath && metadata.iconPath !== metadata.runtime) {
+      const iconDir = safeJoin(appDir, "icons");
+      if (path.dirname(metadata.iconPath) !== iconDir ||
+          !assertDirectoryNoLinksIfExists(iconDir, "iconos")) return null;
+      assertRegularFile(metadata.iconPath, "icono");
+    }
+    return metadata;
+  } catch {
+    return null;
+  }
+}
+
+function ensureMaterializedProfile(context, configPath, profile) {
+  return readMaterializedProfile(context, configPath, profile) ||
+    materializeProfile(context, configPath, { profile });
+}
+
+function nativeShortcutName(context, appDir, instanceId) {
+  const record = readJsonIfExists(safeJoin(appDir, 'native-install.json'));
+  if (!record || record.instance_id !== instanceId || typeof record.shortcut !== 'string') return null;
+  const shortcut = path.resolve(record.shortcut.replace(/^\\\\\?\\/, ''));
+  if (path.dirname(shortcut).toUpperCase() !== path.resolve(context.programsDir).toUpperCase()) fail('Acceso directo nativo fuera del directorio administrado');
+  const name = path.basename(shortcut, '.lnk');
+  assertSafeShortcutName(name);
+  if (!name.toLowerCase().endsWith(`-${instanceId.slice(0, 8)}`)) fail('Acceso directo nativo ajeno a esta app');
+  return name;
+}
+
 function materializeProfile(context, configPath, operationResult) {
   const sourceProfile = operationResult.profile || operationResult;
   const instanceId = assertUuid(sourceProfile.instance_id);
@@ -957,10 +1021,9 @@ function materializeProfile(context, configPath, operationResult) {
     instanceId
   );
   const installMetadataPath = safeJoin(appDir, "install.json");
-  const previous = validateInstallMetadata(
-    readJsonIfExists(installMetadataPath),
-    instanceId
-  );
+  let previous = null;
+  try { previous = validateInstallMetadata(readJsonIfExists(installMetadataPath), instanceId); }
+  catch { /* A corrupt cache is rebuilt; never follow paths from it. */ }
 
   let iconPath = runtime;
   if (exported.icon) {
@@ -1006,9 +1069,18 @@ function materializeProfile(context, configPath, operationResult) {
     manifest,
     runtime,
     shortcutName,
-    shortcutPath: safeJoin(context.programsDir, `${shortcutName}.lnk`)
+    shortcutPath: safeJoin(context.programsDir, `${shortcutName}.lnk`),
+    sourceConfig: path.resolve(configPath),
+    sourceFingerprint: profileFingerprint(sourceProfile),
+    runtimeVersion: packageJson.version,
+    manifestHash: fileSha256(manifest),
+    iconPath
   };
   writeJsonAtomic(installMetadataPath, metadata);
+  const nativeName = nativeShortcutName(context, appDir, instanceId);
+  if (nativeName && !sameShortcutName(nativeName, shortcutName)) {
+    runShortcutScript(context, 'Remove', { shortcutName: nativeName });
+  }
   return metadata;
 }
 
@@ -1036,6 +1108,9 @@ function removeMaterializedProfile(context, profile) {
     runShortcutScript(context, "Remove", { shortcutName });
   }
 
+  const nativeName = fs.existsSync(appDir) && nativeShortcutName(context, appDir, instanceId);
+  if (nativeName && !sameShortcutName(nativeName, shortcutName)) runShortcutScript(context, 'Remove', { shortcutName: nativeName });
+
   if (fs.existsSync(appDir)) {
     const relative = path.relative(path.resolve(context.appsDir), appDir);
     if (!relative || relative.startsWith("..") || path.isAbsolute(relative)) {
@@ -1060,7 +1135,7 @@ function openInstalledProfile(metadata) {
       cwd: path.dirname(metadata.manifest),
       detached: true,
       stdio: "ignore",
-      windowsHide: false,
+      windowsHide: true,
       shell: false
     }
   );
@@ -1156,6 +1231,33 @@ function failMaterializationIfNeeded(outcome) {
   );
 }
 
+async function finishCreation(context, configPath, results, options, services = {}) {
+  const materialize = services.materialize || materializeOperations;
+  const open = services.open || openInstalledProfile;
+  const hydrate = services.hydrate || hydrateProfileFavicons;
+  let outcome;
+  if (options.open) {
+    outcome = materialize(context, configPath, results);
+    outcome.installed.forEach(open);
+    failMaterializationIfNeeded(outcome);
+  }
+  let faviconWarnings = [];
+  let cleanupWarnings = [];
+  if (options.favicon) {
+    // The process remains alive to complete the bounded job; the window is
+    // already usable. --no-open still waits for a fully materialized result.
+    const hydrated = await hydrate(context, configPath, results);
+    results = hydrated.results;
+    faviconWarnings = hydrated.warnings;
+    cleanupWarnings = hydrated.cleanupWarnings;
+  }
+  if (!options.open || options.favicon) {
+    outcome = materialize(context, configPath, results);
+    failMaterializationIfNeeded(outcome);
+  }
+  return { results, faviconWarnings, cleanupWarnings };
+}
+
 function repairInstallation(context, configPath, profiles) {
   const outcome = materializeOperations(
     context,
@@ -1196,7 +1298,6 @@ async function main(rawArgs = process.argv.slice(2)) {
   const invocation = extractGlobalOptions(rawArgs);
   const args = invocation.args;
   if (
-    args.length === 0 ||
     (args.length === 1 && ["--help", "-h", "help"].includes(args[0]))
   ) {
     printHelp();
@@ -1209,6 +1310,15 @@ async function main(rawArgs = process.argv.slice(2)) {
 
   const context = getContext();
   const configPath = invocation.configPath || context.registry;
+
+  if (args.length === 0 || (args.length === 1 && ["manage", "--manager"].includes(args[0]))) {
+    const child = spawn(context.nativeExe, withConfig(["--manager"], configPath), {
+      detached: true, stdio: "ignore", windowsHide: true, shell: false
+    });
+    child.on("error", (error) => { console.error(`misku-nv: ${error.message}`); process.exitCode = 1; });
+    child.unref();
+    return;
+  }
 
   if (
     args.length > 1 &&
@@ -1232,26 +1342,13 @@ async function main(rawArgs = process.argv.slice(2)) {
       invokeJson(context, configPath, ["create", ...friendly.createArgs]),
       "create"
     );
-    let faviconWarnings = [];
-    let faviconCleanupWarnings = [];
-    if (friendly.fetchFavicon) {
-      const faviconOutcome = await hydrateProfileFavicons(
-        context,
-        configPath,
-        results
-      );
-      results = faviconOutcome.results;
-      faviconWarnings = faviconOutcome.warnings;
-      faviconCleanupWarnings = faviconOutcome.cleanupWarnings;
-    }
-    const outcome = materializeOperations(context, configPath, results);
+    const creation = await finishCreation(context, configPath, results, {
+      open: friendly.openAfterCreate, favicon: friendly.fetchFavicon
+    });
+    results = creation.results;
     printOperations(results, invocation.outputJson || friendly.outputJson);
-    printFaviconWarnings(faviconWarnings, "default");
-    printTemporaryCleanupWarnings(faviconCleanupWarnings);
-    if (friendly.openAfterCreate) {
-      outcome.installed.forEach(openInstalledProfile);
-    }
-    failMaterializationIfNeeded(outcome);
+    printFaviconWarnings(creation.faviconWarnings, "default");
+    printTemporaryCleanupWarnings(creation.cleanupWarnings);
     return;
   }
 
@@ -1268,26 +1365,13 @@ async function main(rawArgs = process.argv.slice(2)) {
       invokeJson(context, configPath, nativeArgs),
       "create"
     );
-    let faviconWarnings = [];
-    let faviconCleanupWarnings = [];
-    if (faviconOptions.autoFavicon) {
-      const faviconOutcome = await hydrateProfileFavicons(
-        context,
-        configPath,
-        results
-      );
-      results = faviconOutcome.results;
-      faviconWarnings = faviconOutcome.warnings;
-      faviconCleanupWarnings = faviconOutcome.cleanupWarnings;
-    }
-    const outcome = materializeOperations(context, configPath, results);
+    const creation = await finishCreation(context, configPath, results, {
+      open: shouldOpen, favicon: faviconOptions.autoFavicon
+    });
+    results = creation.results;
     printOperations(results, invocation.outputJson);
-    printFaviconWarnings(faviconWarnings, "default");
-    printTemporaryCleanupWarnings(faviconCleanupWarnings);
-    if (shouldOpen) {
-      outcome.installed.forEach(openInstalledProfile);
-    }
-    failMaterializationIfNeeded(outcome);
+    printFaviconWarnings(creation.faviconWarnings, "default");
+    printTemporaryCleanupWarnings(creation.cleanupWarnings);
     return;
   }
 
@@ -1412,15 +1496,11 @@ async function main(rawArgs = process.argv.slice(2)) {
 
   const selector = selectorFromArgs(args);
   if (selector) {
-    const profiles = expectArray(
-      invokeJson(context, configPath, ["--list"]),
-      "list"
-    );
-    const profile = findProfile(profiles, selector);
+    const profile = invokeJson(context, configPath, ["inspect", selector]);
     if (!profile) {
       fail(`no existe la app '${selector}'. Usa misku-nv --list`);
     }
-    const metadata = materializeProfile(context, configPath, { profile });
+    const metadata = ensureMaterializedProfile(context, configPath, profile);
     openInstalledProfile(metadata);
     return;
   }
@@ -1441,6 +1521,9 @@ if (require.main === module) {
 }
 
 module.exports = {
+  finishCreation,
+  profileFingerprint,
+  readMaterializedProfile,
   UUID_PATTERN,
   assertUuid,
   extractGlobalOptions,

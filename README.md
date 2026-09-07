@@ -6,6 +6,27 @@ Misku Native Views convierte URLs en aplicaciones de escritorio independientes p
 misku-nv
 ```
 
+Desde 0.3, ejecutar `misku-nv` sin argumentos abre el gestor gráfico. También puedes instalar **Misku Native Views** desde el instalador `.exe` de [GitHub Releases](https://github.com/JohannRojas/misku-native-view/releases) y abrirlo desde Inicio, sin Node, pnpm ni PowerShell. El instalador descarga WebView2 si hace falta. Los instaladores actuales no tienen firma Authenticode; las sumas y la procedencia de GitHub permiten verificar los archivos, pero no sustituyen un certificado de firma de Windows.
+
+## Gestor y apertura
+
+El gestor permite añadir una URL y un nombre, buscar con `Ctrl+K`, abrir, editar y eliminar apps. Una eliminación conserva las sesiones. Los errores permiten reintentar; si el registro ya se guardó pero falla un acceso directo, se muestra la app guardada para evitar duplicarla.
+
+- Cada UUID tiene una sola instancia. Abrirla otra vez restaura su ventana; otra app, incluso con la misma URL, mantiene su propio proceso y sesión.
+- Una instalación sin cambios reutiliza su manifiesto, runtime y acceso directo. La apertura desde CLI evita volver a exportar archivos, lanzar PowerShell o calcular el hash completo del ejecutable.
+- La creación desde CLI abre antes de esperar la descarga del favicon. El comando permanece activo hasta terminar ese trabajo acotado; `--no-open` espera a tener la instalación completa.
+- El gestor crea los accesos directos mediante las APIs nativas. El favicon se obtiene cuando WebView2 lo descubre; una app nunca depende de él para abrir.
+- El menú **Navegación** ofrece Volver, Adelante, Recargar, Inicio y Abrir en el navegador. La ventana indica la carga y permite reintentar errores de navegación.
+- **Pausar al minimizar** es una opción avanzada por app y está desactivada por defecto. Puede interrumpir música, llamadas, temporizadores y notificaciones. Los cambios de una app abierta se aplican al cerrarla y abrirla otra vez.
+
+```powershell
+misku-nv manage
+misku-nv update <uuid> --suspend-on-minimize
+misku-nv update <uuid> --keep-active
+```
+
+Estas mejoras reducen trabajo en la apertura; no implican que WebView2 sea universalmente más rápido que otros motores. CPU, memoria, arranque en frío y comportamiento de cada sitio deben medirse en el equipo objetivo. `MISKU_NV_TRACE=1` emite tiempos de creación de ventana y navegación a stderr cuando el ejecutable se inicia con salida capturada.
+
 ## Modelo de aplicaciones
 
 Cada creación genera una instancia nueva, incluso si la URL ya existe:
@@ -27,7 +48,8 @@ Una instalación nueva administrada usa, por defecto, esta estructura:
 ├── apps\
 │   └── <uuid>\
 │       ├── app.toml
-│       ├── install.json
+│       ├── install.json          # caché del CLI
+│       ├── native-install.json   # caché del gestor
 │       └── icons\
 │           └── <uuid>.ico
 └── runtimes\
@@ -48,7 +70,7 @@ Para desarrollar o compilar desde el repositorio:
 
 - Rust 1.88 o posterior con el toolchain MSVC.
 - Microsoft Visual Studio Build Tools con “Desktop development with C++”.
-- Node.js y pnpm para empaquetar el CLI.
+- Node.js 22 y la versión de pnpm fijada en `package.json` para desarrollar y empaquetar. El CLI publicado conserva compatibilidad con Node 18, 22 y 24.
 - Python y Pillow solamente para convertir imágenes a `.ico`.
 
 ## Instalar el CLI
@@ -135,7 +157,8 @@ Al actualizar desde la versión 0.1, si todavía no existe un registro local per
 - Cada UUID usa un directorio de datos WebView y un archivo de estado de ventana propios.
 - El registro se escribe de forma atómica y se bloquea durante las mutaciones.
 - Iconos, alias y rutas administradas se validan antes de crear o eliminar archivos.
-- El favicon usa peticiones sin cookies ni credenciales, redirects manuales, DNS fijado, límites de tiempo/tamaño y únicamente recursos del mismo origen.
+- El descubrimiento de favicon del CLI usa peticiones sin cookies ni credenciales, redirects manuales, DNS fijado, límites de tiempo/tamaño y únicamente recursos del mismo origen. En el gestor, lo entrega el propio WebView2 después de navegar.
+- Solo la ventana local del gestor puede invocar operaciones nativas. Las páginas web no tienen permisos de gestión, shell ni sistema de archivos.
 - HTTPS es obligatorio para favicons públicos; HTTP solo funciona para loopback con `--allow-http`. Un fallo de descarga nunca impide crear la app.
 
 Ejemplo de origen adicional:
@@ -258,6 +281,31 @@ misku-nv https://example.com --icon .\icons\myapp.ico
 
 ## CI y publicación
 
-Los workflows de GitHub compilan y prueban el runtime, empaquetan el tarball de pnpm y ejecutan una prueba de humo del comando `misku-nv`. La publicación requiere el secreto `NPM_TOKEN`.
+Cada push y PR ejecuta el mismo workflow reutilizable que las releases:
+
+1. Tests del CLI en Node 18, 22 y 24; concordancia entre las tres versiones del producto.
+2. Flujos del gestor en Playwright, validación de accesibilidad con axe y tamaños de 440/1280 px. Estas pruebas usan un puente simulado exclusivamente dentro del test.
+3. Rust 1.88 (MSRV): formato, tests y Clippy sin avisos; caché de dependencias.
+4. Una compilación de producción genera el instalador NSIS y el runtime del tarball npm. Se instala el tarball exacto para comprobar CLI, manifiestos, iconos y accesos directos.
+5. Prueba del ejecutable real con WebView2: gestor, registro, accesos directos, caché de apertura, aislamiento del IPC, instancia única y almacenamiento separado y persistente. El puerto de depuración solo se activa en el proceso de prueba, ligado a loopback.
+6. Instalación y desinstalación silenciosas en un runner efímero; comparación de los bytes del runtime con los del paquete npm. Se conservan instalador, tarball, `build-info.json` y `SHA256SUMS` como artifacts.
+
+El check agregado **CI required** solo pasa si todo lo anterior funciona. Las acciones están fijadas a SHA y Dependabot propone actualizaciones semanales de acciones y dependencias. Consulta [el procedimiento de release](docs/releasing.md) para publicar, verificar o recuperar una publicación parcial.
+
+Validación local en Windows (PowerShell 7):
+
+```powershell
+pnpm install --frozen-lockfile --ignore-scripts
+pnpm test
+pnpm exec playwright install chromium
+pnpm test:ui
+cargo fmt --all -- --check
+cargo test --workspace --locked
+cargo clippy --workspace --all-targets --locked -- -D warnings
+./scripts/build-distribution.ps1
+pnpm test:native
+```
+
+Para probar la interfaz con Edge instalado, establece `$env:PW_CHANNEL='msedge'`. La prueba nativa usa carpetas temporales propias; `MISKU_NV_PROFILE_ROOT` permite aislar los datos de WebView2 durante las pruebas. El smoke del instalador se limita a GitHub Actions para no alterar una instalación local existente.
 
 No deben versionarse sesiones privadas ni resultados generados como `target/`, `portable/`, `runtime/`, `screenshots/`, `artifacts/`, `.env*` o logs.

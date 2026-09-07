@@ -1,14 +1,17 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 mod cli;
+mod installation;
+mod manager;
 mod model;
+mod platform;
 mod runtime;
 
 use cli::{Command, HelpTopic, LaunchArgs};
 use model::{
     AppProfile, CreateRequest, UpdateRequest, acquire_config_lock, create_profiles, export_profile,
     load_config, load_config_for_write, purge_profile_data, remove_profile, save_config_atomic,
-    select_profile, update_profile,
+    update_profile,
 };
 use serde::Serialize;
 use std::{
@@ -31,6 +34,9 @@ struct OperationResult {
 fn main() {
     if let Err(error) = run() {
         eprintln!("misku-native-views: {error}");
+        if is_graphical_invocation() {
+            platform::show_error("No se pudo abrir Misku", &error);
+        }
         std::process::exit(1);
     }
 }
@@ -38,6 +44,16 @@ fn main() {
 fn run() -> Result<(), String> {
     let args = cli::parse_args(env::args().skip(1))?;
     match args.command.clone() {
+        Command::Manager => {
+            // Renamed portable launchers keep opening their original app.
+            if env::args().len() == 1
+                && let Some(id) = infer_profile_id_from_exe()
+            {
+                let path = resolve_config_path(None)?;
+                return runtime::launch(model::load_profile_for_open(&path, Some(&id))?, &path);
+            }
+            manager::launch(args.config_path)
+        }
         Command::Help(topic) => {
             print_help(topic);
             Ok(())
@@ -47,6 +63,15 @@ fn run() -> Result<(), String> {
             Ok(())
         }
         Command::List => list_apps(&args),
+        Command::Inspect { selector } => {
+            let config_path = resolve_config_path(args.config_path.as_deref())?;
+            let profile = model::load_profile_for_open(&config_path, selector.as_deref())?;
+            println!(
+                "{}",
+                serde_json::to_string(&profile).map_err(|e| e.to_string())?
+            );
+            Ok(())
+        }
         Command::Create(command) => {
             let config_path = resolve_config_path_for_write(args.config_path.as_deref())?;
             let _lock = acquire_config_lock(&config_path)?;
@@ -91,6 +116,7 @@ fn run() -> Result<(), String> {
                     clear_icon: command.clear_icon,
                     allowed_origins: command.allowed_origins,
                     allow_insecure_http: command.allow_insecure_http,
+                    suspend_when_minimized: command.suspend_when_minimized,
                 },
             )?;
             save_config_atomic(&config_path, &config)?;
@@ -129,8 +155,14 @@ fn run() -> Result<(), String> {
         }
         Command::Export(command) => {
             let config_path = resolve_config_path(args.config_path.as_deref())?;
-            let config = load_config(&config_path)?;
-            let profile = select_profile(&config, Some(&command.selector))?;
+            let mut profile = model::load_profile_for_open(&config_path, Some(&command.selector))?;
+            if profile
+                .icon
+                .as_deref()
+                .is_some_and(|icon| model::resolve_icon_path(&config_path, icon).is_err())
+            {
+                profile.icon = None;
+            }
             let output = absolute_path(&command.output)?;
             let exported = export_profile(&config_path, &profile, &output)?;
             print_results(
@@ -145,12 +177,25 @@ fn run() -> Result<(), String> {
         }
         Command::Open { selector } => {
             let config_path = resolve_config_path(args.config_path.as_deref())?;
-            let config = load_config(&config_path)?;
             let inferred_id = infer_profile_id_from_exe();
-            let profile = select_profile(&config, selector.as_deref().or(inferred_id.as_deref()))?;
+            let profile = model::load_profile_for_open(
+                &config_path,
+                selector.as_deref().or(inferred_id.as_deref()),
+            )?;
             runtime::launch(profile, &config_path)
         }
     }
+}
+
+fn is_graphical_invocation() -> bool {
+    let args: Vec<_> = env::args().skip(1).collect();
+    args.is_empty()
+        || args.iter().any(|a| {
+            matches!(
+                a.as_str(),
+                "--app" | "-a" | "--manager" | "manage" | "open" | "run"
+            )
+        })
 }
 
 fn list_apps(args: &LaunchArgs) -> Result<(), String> {
@@ -235,13 +280,16 @@ fn configured_path(explicit_path: Option<&Path>) -> Result<PathBuf, String> {
     if let Some(path) = env::var_os(CONFIG_ENV) {
         return Ok(PathBuf::from(path));
     }
-    env::current_exe()
+    let portable = env::current_exe()
         .map_err(|error| format!("no se pudo resolver el ejecutable actual: {error}"))?
         .parent()
-        .map(|parent| parent.join(DEFAULT_CONFIG_FILE))
-        .ok_or_else(|| {
-            format!("no se pudo resolver {DEFAULT_CONFIG_FILE}; usa --config <ruta> o {CONFIG_ENV}")
-        })
+        .map(|parent| parent.join(DEFAULT_CONFIG_FILE));
+    if let Some(path) = portable
+        && path.is_file()
+    {
+        return Ok(path);
+    }
+    installation::default_registry()
 }
 
 fn absolute_path(path: &Path) -> Result<PathBuf, String> {

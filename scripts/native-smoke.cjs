@@ -45,12 +45,18 @@ async function connect(port, child, predicate) {
   }
   throw new Error(`WebView2 no disponible en ${port}`);
 }
-async function stop(child) {
+async function stop(child, requireGraceful = false) {
   if (child.exitCode !== null) return;
   const exited = new Promise(resolve => child.once('exit', resolve));
+  spawnSync('powershell.exe', ['-NoProfile', '-Command', '(Get-Process -Id $env:MISKU_TEST_PID -ErrorAction SilentlyContinue).CloseMainWindow() | Out-Null'], {
+    env: { ...process.env, MISKU_TEST_PID: String(child.pid) }, windowsHide: true, timeout: 10000
+  });
+  await Promise.race([exited, delay(8000)]);
+  if (child.exitCode !== null) return;
   // PID belongs to the child launched above, never a name-based process kill.
   spawnSync('taskkill.exe', ['/PID', String(child.pid), '/T', '/F'], { windowsHide: true });
   await Promise.race([exited, delay(5000)]);
+  if (requireGraceful) throw new Error('La ventana no respondió a un cierre normal');
 }
 async function main() {
   fs.mkdirSync(evidence, { recursive: true });
@@ -67,7 +73,7 @@ async function main() {
     await page.locator('.advanced summary').click(); await page.locator('#http').check();
     await page.locator('#open-after').uncheck(); await page.locator('#save').click();
     await page.getByRole('button', { name: `Abrir ${name}`, exact: true }).waitFor();
-    assert.equal(await page.locator('#error').isVisible(), false);
+    assert.equal(await page.locator('#error').isVisible(), false, await page.locator('#error-detail').textContent());
   }
   await create('Primera'); await create('Segunda');
   const snapshot = () => page.evaluate(() => window.__TAURI__.core.invoke('manager_snapshot'));
@@ -96,11 +102,11 @@ async function main() {
   const portB = await freePort(); const appB = launch(args(apps[1]), portB);
   const viewB = await connect(portB, appB, u => u === url);
   assert.equal(await viewB.evaluate(() => localStorage.getItem('misku-test')), null);
-  await stop(appB); await stop(appA);
+  await stop(appB, true); await stop(appA, true);
   const portAgain = await freePort(); const again = launch(args(apps[0]), portAgain);
   const viewAgain = await connect(portAgain, again, u => u === url);
   assert.equal(await viewAgain.evaluate(() => localStorage.getItem('misku-test')), 'first-profile');
-  await stop(again);
+  await stop(again, true);
   await page.getByRole('button', { name: 'Editar Primera', exact: true }).click();
   await page.locator('#name').fill('Renombrada'); await page.locator('#save').click();
   await page.getByRole('button', { name: 'Abrir Renombrada', exact: true }).waitFor();
@@ -124,6 +130,14 @@ main().catch(async error => {
   for (const browser of browsers) { try { await browser.close(); } catch {} }
   server.close();
   if (path.dirname(root) !== os.tmpdir() || !path.basename(root).startsWith('misku-native-test-')) throw new Error('Unsafe cleanup');
-  // Only our generated test root is removed; WebView2 can take a moment to exit.
-  fs.rmSync(root, { recursive: true, force: true, maxRetries: 10, retryDelay: 500 });
+  // WebView2 creates read-only cache leaves; use native Windows cleanup with
+  // its own path guard, after closing every test process.
+  const cleanup = spawnSync('powershell.exe', ['-NoProfile', '-Command', [
+    "$ErrorActionPreference = 'Stop'",
+    '$testRoot = [IO.Path]::GetFullPath($env:MISKU_TEST_ROOT)',
+    "$parent = [IO.Path]::GetFullPath([IO.Path]::GetTempPath()).TrimEnd('\\')",
+    "if ([IO.Path]::GetDirectoryName($testRoot) -ne $parent -or -not [IO.Path]::GetFileName($testRoot).StartsWith('misku-native-test-')) { throw 'Unsafe cleanup' }",
+    'if (Test-Path -LiteralPath $testRoot) { Remove-Item -LiteralPath $testRoot -Recurse -Force }'
+  ].join('\n')], { env: { ...process.env, MISKU_TEST_ROOT: root }, encoding: 'utf8', windowsHide: true, timeout: 30000 });
+  if (cleanup.error || cleanup.status !== 0) throw cleanup.error || new Error(cleanup.stderr);
 });

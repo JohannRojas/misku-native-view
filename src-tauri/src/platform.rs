@@ -180,27 +180,38 @@ pub(crate) fn create_shortcut(
         let _com = ComGuard;
         let link: IShellLinkW =
             CoCreateInstance(&ShellLink, None, CLSCTX_INPROC_SERVER).map_err(|e| e.to_string())?;
-        link.SetPath(PCWSTR(wide(&executable.to_string_lossy()).as_ptr()))
-            .map_err(|e| e.to_string())?;
+        link.SetPath(PCWSTR(wide(&shell_path(executable)).as_ptr()))
+            .map_err(|e| format!("No se pudo configurar el destino del acceso directo: {e}"))?;
         let arguments = format!(
             "--config {} --app {}",
-            quote_argument(&config.to_string_lossy()),
+            quote_argument(&shell_path(config)),
             quote_argument(id)
         );
         link.SetArguments(PCWSTR(wide(&arguments).as_ptr()))
             .map_err(|e| e.to_string())?;
-        link.SetIconLocation(PCWSTR(wide(&icon.to_string_lossy()).as_ptr()), 0)
-            .map_err(|e| e.to_string())?;
+        link.SetIconLocation(PCWSTR(wide(&shell_path(icon)).as_ptr()), 0)
+            .map_err(|e| format!("No se pudo configurar el icono del acceso directo: {e}"))?;
         let persist: IPersistFile = link.cast().map_err(|e| e.to_string())?;
         persist
-            .Save(PCWSTR(wide(&shortcut.to_string_lossy()).as_ptr()), true)
-            .map_err(|e| e.to_string())?;
+            .Save(PCWSTR(wide(&shell_path(shortcut)).as_ptr()), true)
+            .map_err(|e| format!("No se pudo guardar el acceso directo: {e}"))?;
     }
     #[cfg(not(windows))]
     {
         let _ = (shortcut, executable, config, id, icon);
     }
     Ok(())
+}
+
+#[cfg(windows)]
+fn shell_path(path: &Path) -> String {
+    // ShellLink does not accept the extended-length prefix emitted by canonicalize.
+    let value = path.to_string_lossy();
+    if let Some(unc) = value.strip_prefix(r"\\?\UNC\") {
+        format!(r"\\{unc}")
+    } else {
+        value.strip_prefix(r"\\?\").unwrap_or(&value).to_string()
+    }
 }
 
 pub(crate) fn quote_argument(value: &str) -> String {
@@ -231,6 +242,32 @@ mod tests {
     fn quotes_windows_paths_and_embedded_quotes() {
         assert_eq!(quote_argument("C:\\Some App\\"), "\"C:\\Some App\\\\\"");
         assert_eq!(quote_argument("a\"b"), "\"a\\\"b\"");
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn shortcut_accepts_canonical_windows_paths() {
+        let root = std::env::temp_dir().join(format!("misku-shortcut-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir(&root).unwrap();
+        let root = root.canonicalize().unwrap();
+        let config = root.join("app.toml");
+        std::fs::write(&config, "apps = []").unwrap();
+        let exe = std::env::current_exe().unwrap().canonicalize().unwrap();
+        let shortcut = root.join("Test.lnk");
+        create_shortcut(
+            &shortcut,
+            &exe,
+            &config,
+            &uuid::Uuid::new_v4().to_string(),
+            &exe,
+        )
+        .unwrap();
+        assert!(std::fs::metadata(&shortcut).unwrap().len() > 0);
+        assert_eq!(
+            shell_path(Path::new(r"\\?\UNC\server\share\file")),
+            r"\\server\share\file"
+        );
+        std::fs::remove_dir_all(root).unwrap();
     }
     #[cfg(windows)]
     #[test]

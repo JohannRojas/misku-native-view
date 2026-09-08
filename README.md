@@ -281,7 +281,7 @@ misku-nv https://example.com --icon .\icons\myapp.ico
 
 ## CI y publicación
 
-Cada push y PR ejecuta el mismo workflow reutilizable que las releases:
+Cada push a `main` y cada PR ejecutan el mismo workflow reutilizable que las releases, evitando duplicar builds para el mismo cambio:
 
 1. Tests del CLI en Node 18, 22 y 24; concordancia entre las tres versiones del producto.
 2. Flujos del gestor en Playwright, validación de accesibilidad con axe y tamaños de 440/1280 px. Estas pruebas usan un puente simulado exclusivamente dentro del test.

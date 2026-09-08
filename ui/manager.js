@@ -35,7 +35,7 @@
     $("apps").replaceChildren(fragment); $("empty").hidden = apps.length > 0;
     $("count").textContent = `${apps.length} ${apps.length === 1 ? "app" : "apps"}`;
     if (term) notify(visible.length ? `${visible.length} resultados` : "No hay apps que coincidan con tu búsqueda.");
-    else if (!apps.length) notify("");
+    else notify("");
   }
   async function load() {
     try { const snapshot = await invoke("manager_snapshot"); apps = snapshot.apps; $("version").textContent = `Misku ${snapshot.version}`; $("error").hidden = true; notify(""); render(); }

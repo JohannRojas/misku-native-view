@@ -1,128 +1,67 @@
-name: Publish npm package
-
+name: Release
 on:
-  release:
-    types:
-      - published
-  workflow_dispatch:
-    inputs:
-      npm_tag:
-        description: npm distribution tag
-        required: true
-        default: latest
-        type: string
-
+  push:
+    tags: ['v*']
+  workflow_dispatch: # Full rehearsal: build and test without publishing.
 permissions:
   contents: read
-  id-token: write
-
 concurrency:
-  group: publish-npm-${{ github.ref }}
+  group: release-${{ github.ref }}
   cancel-in-progress: false
-
-env:
-  CARGO_TERM_COLOR: always
-  RUST_TOOLCHAIN: "1.88.0"
-  RUST_TARGET: x86_64-pc-windows-msvc
-
 jobs:
+  verify:
+    uses: ./.github/workflows/verify.yml
   publish:
-    name: Build, verify, and publish exact tarball
-    runs-on: windows-latest
-    timeout-minutes: 45
-
+    name: Publish tested assets
+    if: startsWith(github.ref, 'refs/tags/v') && github.event_name == 'push'
+    needs: verify
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    environment: release
+    permissions:
+      contents: write
+      id-token: write
+      attestations: write
     steps:
-      - name: Checkout release
-        uses: actions/checkout@v4
-
-      - name: Setup Node.js for npm
-        uses: actions/setup-node@v4
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
         with:
-          node-version: "22"
+          fetch-depth: 0
+      - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
+        with:
+          node-version: '22'
           registry-url: https://registry.npmjs.org/
-
-      - name: Setup pnpm
-        shell: pwsh
-        run: |
-          corepack enable
-          corepack prepare pnpm@11.7.0 --activate
-          pnpm --version
-
-      - name: Setup pinned Rust toolchain
-        shell: pwsh
-        run: |
-          rustup toolchain install $env:RUST_TOOLCHAIN --profile minimal --component rustfmt --component clippy --target $env:RUST_TARGET
-          rustup default $env:RUST_TOOLCHAIN
-          rustc --version
-          cargo --version
-
-      - name: Validate release version
-        if: github.event_name == 'release'
-        shell: pwsh
+      - name: Validate release tag and main ancestry
         env:
-          RELEASE_TAG: ${{ github.event.release.tag_name }}
+          RELEASE_TAG: ${{ github.ref_name }}
         run: |
-          $version = (Get-Content -LiteralPath package.json -Raw | ConvertFrom-Json).version
-          $releaseVersion = $env:RELEASE_TAG.TrimStart("v")
-          if ($version -ne $releaseVersion) {
-            throw "El tag de release ($releaseVersion) no coincide con package.json ($version)."
-          }
-
-      - name: Validate source
-        shell: pwsh
-        run: |
-          . .\scripts\build-env.ps1
-          Initialize-MsvcBuildEnvironment | Out-Null
-          cargo fmt --all -- --check
-          cargo test --workspace --locked
-          cargo clippy --workspace --all-targets --locked -- -D warnings
-          pnpm test
-
-      - name: Pack exact tarball
-        shell: pwsh
-        run: |
-          New-Item -ItemType Directory -Path artifacts -Force | Out-Null
-          pnpm pack --pack-destination artifacts
-          $packages = @(Get-ChildItem -LiteralPath artifacts -Filter "*.tgz" -File)
-          if ($packages.Count -ne 1) {
-            throw "Esperaba exactamente un tarball, pero encontre $($packages.Count)."
-          }
-
-      - name: Smoke test exact tarball
-        shell: pwsh
-        run: |
-          $package = Get-ChildItem -LiteralPath artifacts -Filter "*.tgz" -File | Select-Object -First 1
-          .\scripts\ci-smoke-test-package.ps1 -PackagePath $package.FullName
-
-      - name: Select npm tag
-        id: npm-tag
-        shell: pwsh
-        env:
-          INPUT_NPM_TAG: ${{ inputs.npm_tag }}
-        run: |
-          if ($env:GITHUB_EVENT_NAME -eq "workflow_dispatch") {
-            $tag = $env:INPUT_NPM_TAG
-          } else {
-            $tag = "latest"
-          }
-          if ($tag -notmatch "^[a-zA-Z][a-zA-Z0-9._-]*$") {
-            throw "Tag npm invalido: $tag"
-          }
-          "tag=$tag" >> $env:GITHUB_OUTPUT
-
-      - name: Publish tested tarball
-        shell: pwsh
+          node scripts/release-policy.cjs "$RELEASE_TAG" >> "$GITHUB_OUTPUT"
+          git merge-base --is-ancestor HEAD origin/main
+        id: release
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          name: distribution
+          path: distribution
+      - name: Verify exact assets
+        working-directory: distribution
+        run: sha256sum --check SHA256SUMS
+      - uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6 # v4
+        with:
+          subject-path: 'distribution/*'
+      - name: Publish exact tarball with npm provenance
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
-          NPM_TAG: ${{ steps.npm-tag.outputs.tag }}
+          NPM_TAG: ${{ steps.release.outputs.npm_tag }}
+        run: node scripts/publish-npm.cjs distribution "$NPM_TAG"
+      - name: Publish GitHub Release and installer
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ github.ref_name }}
+          PRERELEASE: ${{ steps.release.outputs.prerelease }}
         run: |
-          $package = Get-ChildItem -LiteralPath artifacts -Filter "*.tgz" -File | Select-Object -First 1
-          npm publish $package.FullName --access public --provenance --tag $env:NPM_TAG
-
-      - name: Upload published tarball
-        uses: actions/upload-artifact@v4
-        with:
-          name: published-misku-native-view-cli
-          path: artifacts/*.tgz
-          if-no-files-found: error
-          retention-days: 30
+          if gh release view "$RELEASE_TAG" >/dev/null 2>&1; then
+            gh release upload "$RELEASE_TAG" distribution/* --clobber
+          else
+            flags=()
+            if [ "$PRERELEASE" = true ]; then flags+=(--prerelease); fi
+            gh release create "$RELEASE_TAG" distribution/* --verify-tag --generate-notes "${flags[@]}"
+          fi

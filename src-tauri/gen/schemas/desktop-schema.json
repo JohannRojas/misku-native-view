@@ -177,6 +177,66 @@
       "description": "Permission identifier",
       "oneOf": [
         {
+          "description": "Enables the manager_create command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-manager-create",
+          "markdownDescription": "Enables the manager_create command without any pre-configured scope."
+        },
+        {
+          "description": "Enables the manager_open command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-manager-open",
+          "markdownDescription": "Enables the manager_open command without any pre-configured scope."
+        },
+        {
+          "description": "Enables the manager_remove command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-manager-remove",
+          "markdownDescription": "Enables the manager_remove command without any pre-configured scope."
+        },
+        {
+          "description": "Enables the manager_snapshot command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-manager-snapshot",
+          "markdownDescription": "Enables the manager_snapshot command without any pre-configured scope."
+        },
+        {
+          "description": "Enables the manager_update command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-manager-update",
+          "markdownDescription": "Enables the manager_update command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the manager_create command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-manager-create",
+          "markdownDescription": "Denies the manager_create command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the manager_open command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-manager-open",
+          "markdownDescription": "Denies the manager_open command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the manager_remove command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-manager-remove",
+          "markdownDescription": "Denies the manager_remove command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the manager_snapshot command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-manager-snapshot",
+          "markdownDescription": "Denies the manager_snapshot command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the manager_update command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-manager-update",
+          "markdownDescription": "Denies the manager_update command without any pre-configured scope."
+        },
+        {
           "description": "Default core plugins set.\n#### This default permission set includes:\n\n- `core:path:default`\n- `core:event:default`\n- `core:window:default`\n- `core:webview:default`\n- `core:app:default`\n- `core:image:default`\n- `core:resources:default`\n- `core:menu:default`\n- `core:tray:default`",
           "type": "string",
           "const": "core:default",

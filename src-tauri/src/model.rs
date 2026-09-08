@@ -72,6 +72,8 @@ pub(crate) struct AppProfile {
     pub(crate) allowed_origins: Vec<String>,
     #[serde(default)]
     pub(crate) allow_insecure_http: bool,
+    #[serde(default)]
+    pub(crate) suspend_when_minimized: bool,
 }
 
 impl AppProfile {
@@ -111,7 +113,7 @@ pub(crate) struct CreateRequest {
     pub(crate) allow_insecure_http: bool,
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Default)]
 pub(crate) struct UpdateRequest {
     pub(crate) selector: String,
     pub(crate) url: Option<String>,
@@ -121,6 +123,7 @@ pub(crate) struct UpdateRequest {
     pub(crate) clear_icon: bool,
     pub(crate) allowed_origins: Option<Vec<String>>,
     pub(crate) allow_insecure_http: Option<bool>,
+    pub(crate) suspend_when_minimized: Option<bool>,
 }
 
 pub(crate) struct ConfigLock {
@@ -204,6 +207,12 @@ pub(crate) fn load_config_for_write(path: &Path) -> Result<AppsConfig, String> {
 }
 
 fn parse_config(content: &str, path: &Path) -> Result<AppsConfig, String> {
+    let config = parse_config_data(content, path)?;
+    validate_config(&config, Some(path))?;
+    Ok(config)
+}
+
+fn parse_config_data(content: &str, path: &Path) -> Result<AppsConfig, String> {
     let mut config: AppsConfig = toml::from_str(content)
         .map_err(|error| format!("configuracion invalida en {}: {error}", path.display()))?;
 
@@ -232,8 +241,30 @@ fn parse_config(content: &str, path: &Path) -> Result<AppsConfig, String> {
             profile.allow_insecure_http = true;
         }
     }
-    validate_config(&config, Some(path))?;
     Ok(config)
+}
+
+/// An unrelated broken URL must not prevent opening an otherwise valid app.
+/// Identity ambiguity is still rejected; icon I/O is handled with a fallback.
+pub(crate) fn load_profile_for_open(
+    path: &Path,
+    selector: Option<&str>,
+) -> Result<AppProfile, String> {
+    let content = fs::read_to_string(path).map_err(|e| e.to_string())?;
+    let config = parse_config_data(&content, path)?;
+    let selected = select_profile(&config, selector)?;
+    let collisions = config
+        .apps
+        .iter()
+        .filter(|p| {
+            p.instance_id() == selected.instance_id() || p.id.eq_ignore_ascii_case(&selected.id)
+        })
+        .count();
+    if collisions != 1 {
+        return Err("La identidad de la app está duplicada en la configuración".into());
+    }
+    validate_profile(&selected, None)?;
+    Ok(selected)
 }
 
 pub(crate) fn save_config_atomic(path: &Path, config: &AppsConfig) -> Result<(), String> {
@@ -355,7 +386,7 @@ pub(crate) fn validate_config(
     Ok(())
 }
 
-fn validate_profile(profile: &AppProfile, config_path: Option<&Path>) -> Result<(), String> {
+fn validate_profile(profile: &AppProfile, _config_path: Option<&Path>) -> Result<(), String> {
     validate_id(&profile.id)?;
     validate_path_component(profile.profile_key())?;
     if profile.name.trim().is_empty() {
@@ -376,9 +407,6 @@ fn validate_profile(profile: &AppProfile, config_path: Option<&Path>) -> Result<
 
     if let Some(icon) = profile.icon.as_deref() {
         validate_relative_path(icon)?;
-        if let Some(config_path) = config_path.filter(|path| path.exists()) {
-            resolve_icon_path(config_path, icon)?;
-        }
     }
     Ok(())
 }
@@ -712,6 +740,7 @@ pub(crate) fn create_profiles(
                 request.allow_insecure_http,
             )?,
             allow_insecure_http: request.allow_insecure_http,
+            suspend_when_minimized: false,
         };
         validate_profile(&profile, Some(config_path))?;
         candidate.apps.push(profile.clone());
@@ -753,6 +782,9 @@ pub(crate) fn update_profile(
     }
     if let Some(allow_insecure_http) = request.allow_insecure_http {
         updated.allow_insecure_http = allow_insecure_http;
+    }
+    if let Some(suspend) = request.suspend_when_minimized {
+        updated.suspend_when_minimized = suspend;
     }
     if let Some(url) = request.url.as_deref() {
         updated.url = parse_app_url(url, updated.allow_insecure_http)?.to_string();
@@ -1024,7 +1056,7 @@ fn metadata_is_reparse_point(metadata: &fs::Metadata) -> bool {
     metadata.file_type().is_symlink()
 }
 
-fn ensure_managed_subdirectory(base: &Path, name: &str) -> Result<PathBuf, String> {
+pub(crate) fn ensure_managed_subdirectory(base: &Path, name: &str) -> Result<PathBuf, String> {
     validate_path_component(name)?;
     fs::create_dir_all(base)
         .map_err(|error| format!("no se pudo crear {}: {error}", base.display()))?;
@@ -1072,7 +1104,7 @@ fn ensure_regular_destination_if_exists(destination: &Path) -> Result<(), String
     Ok(())
 }
 
-fn copy_file_atomic(source: &Path, destination: &Path) -> Result<(), String> {
+pub(crate) fn copy_file_atomic(source: &Path, destination: &Path) -> Result<(), String> {
     let parent = destination
         .parent()
         .ok_or_else(|| format!("destino sin directorio: {}", destination.display()))?;
@@ -1236,6 +1268,12 @@ fn paths_refer_to_same_location(left: &Path, right: &Path) -> Result<bool, Strin
 }
 
 pub(crate) fn purge_profile_data(profile: &AppProfile) -> Result<(), String> {
+    if let Some(root) = env::var_os("MISKU_NV_PROFILE_ROOT") {
+        return remove_managed_directory(
+            &crate::absolute_path(Path::new(&root))?,
+            profile.profile_key(),
+        );
+    }
     #[cfg(windows)]
     let roots = {
         let mut roots = Vec::new();
@@ -1361,6 +1399,66 @@ mod tests {
     }
 
     #[test]
+    fn opening_ignores_an_unrelated_invalid_url_but_rejects_duplicate_identity() {
+        let root = test_dir("selected-open");
+        fs::create_dir_all(&root).unwrap();
+        let path = root.join("apps.toml");
+        let mut config = AppsConfig::default();
+        let profiles = create_profiles(
+            &mut config,
+            &path,
+            empty_request(&["https://example.com/A", "https://other.com/B"]),
+        )
+        .unwrap();
+        config.apps[1].url = "javascript:alert(1)".into();
+        fs::write(&path, toml::to_string(&config).unwrap()).unwrap();
+        assert!(load_config(&path).is_err());
+        assert_eq!(
+            load_profile_for_open(&path, Some(&profiles[0].id))
+                .unwrap()
+                .url,
+            "https://example.com/A"
+        );
+        assert!(load_profile_for_open(&path, Some(&profiles[1].id)).is_err());
+        config.apps[1] = profiles[0].clone();
+        fs::write(&path, toml::to_string(&config).unwrap()).unwrap();
+        assert!(load_profile_for_open(&path, Some(&profiles[0].id)).is_err());
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn missing_icon_does_not_break_opening_and_suspension_is_opt_in() {
+        let root = test_dir("optional-icon");
+        fs::create_dir_all(&root).unwrap();
+        let path = root.join("apps.toml");
+        let mut config = AppsConfig::default();
+        let profile = create_profiles(&mut config, &path, empty_request(&["https://example.com"]))
+            .unwrap()
+            .remove(0);
+        assert!(!profile.suspend_when_minimized);
+        config.apps[0].icon = Some("icons/missing.ico".into());
+        save_config_atomic(&path, &config).unwrap();
+        assert!(load_profile_for_open(&path, Some(&profile.id)).is_ok());
+        update_profile(
+            &mut config,
+            &path,
+            UpdateRequest {
+                selector: profile.id.clone(),
+                suspend_when_minimized: Some(true),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        save_config_atomic(&path, &config).unwrap();
+        assert!(
+            load_profile_for_open(&path, Some(&profile.id))
+                .unwrap()
+                .suspend_when_minimized
+        );
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
     fn creates_distinct_apps_for_paths_on_same_host() {
         let root = test_dir("same-host");
         fs::create_dir_all(&root).unwrap();
@@ -1437,6 +1535,7 @@ mod tests {
                 clear_icon: false,
                 allowed_origins: None,
                 allow_insecure_http: None,
+                suspend_when_minimized: None,
             },
         )
         .unwrap();

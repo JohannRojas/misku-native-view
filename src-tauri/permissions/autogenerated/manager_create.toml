@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-manager-create"
+description = "Enables the manager_create command without any pre-configured scope."
+commands.allow = ["manager_create"]
+
+[[permission]]
+identifier = "deny-manager-create"
+description = "Denies the manager_create command without any pre-configured scope."
+commands.deny = ["manager_create"]

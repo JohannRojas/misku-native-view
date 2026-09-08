@@ -9,7 +9,9 @@ pub(crate) struct LaunchArgs {
 
 #[derive(Clone, Debug)]
 pub(crate) enum Command {
+    Manager,
     Open { selector: Option<String> },
+    Inspect { selector: Option<String> },
     List,
     Create(CreateArgs),
     Update(UpdateArgs),
@@ -48,6 +50,7 @@ pub(crate) struct UpdateArgs {
     pub(crate) clear_icon: bool,
     pub(crate) allowed_origins: Option<Vec<String>>,
     pub(crate) allow_insecure_http: Option<bool>,
+    pub(crate) suspend_when_minimized: Option<bool>,
 }
 
 #[derive(Clone, Debug)]
@@ -71,6 +74,7 @@ where
     let mut json = false;
     let mut selector = None;
     let mut list = false;
+    let mut manager = false;
     let mut index = 0;
 
     while index < args.len() {
@@ -81,14 +85,20 @@ where
             }
             "--json" => json = true,
             "--list" | "-l" | "list" => list = true,
+            "--manager" | "manage" => manager = true,
             "--app" | "-a" => {
                 set_selector(
                     &mut selector,
                     required_value(&args, &mut index, arg)?.to_string(),
                 )?;
             }
-            "run" | "open" => {
-                let command = parse_run(&args[index + 1..], &mut config_path, &mut json)?;
+            "run" | "open" | "inspect" => {
+                let mut command = parse_run(&args[index + 1..], &mut config_path, &mut json)?;
+                if arg == "inspect"
+                    && let Command::Open { selector } = command
+                {
+                    command = Command::Inspect { selector };
+                }
                 return Ok(LaunchArgs {
                     config_path,
                     json,
@@ -152,11 +162,16 @@ where
         index += 1;
     }
 
+    if manager && (list || selector.is_some() || json) {
+        return Err("manage no se puede combinar con una app, --list o --json".into());
+    }
     Ok(LaunchArgs {
         config_path,
         json,
         command: if list {
             Command::List
+        } else if manager || selector.is_none() {
+            Command::Manager
         } else {
             Command::Open { selector }
         },
@@ -274,6 +289,7 @@ fn parse_update(
     let mut clear_icon = false;
     let mut allowed_origins: Option<Vec<String>> = None;
     let mut allow_insecure_http = None;
+    let mut suspend_when_minimized = None;
     let mut index = 0;
 
     while index < args.len() {
@@ -300,6 +316,8 @@ fn parse_update(
             "--clear-allowed-origins" => allowed_origins = Some(Vec::new()),
             "--allow-http" => allow_insecure_http = Some(true),
             "--deny-http" => allow_insecure_http = Some(false),
+            "--suspend-on-minimize" => suspend_when_minimized = Some(true),
+            "--keep-active" => suspend_when_minimized = Some(false),
             "--config" | "-c" => {
                 *config_path = Some(PathBuf::from(required_value(args, &mut index, arg)?));
             }
@@ -342,6 +360,7 @@ fn parse_update(
         && !clear_icon
         && allowed_origins.is_none()
         && allow_insecure_http.is_none()
+        && suspend_when_minimized.is_none()
     {
         return Err("update necesita al menos un cambio".to_string());
     }
@@ -354,6 +373,7 @@ fn parse_update(
         clear_icon,
         allowed_origins,
         allow_insecure_http,
+        suspend_when_minimized,
     }))
 }
 

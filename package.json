@@ -1,6 +1,6 @@
 {
   "name": "misku-native-view-cli",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "description": "Create isolated native Windows web apps from URLs",
   "repository": {
     "type": "git",
@@ -30,8 +30,16 @@
     "README.md"
   ],
   "scripts": {
-    "test": "node --test",
+    "test": "node --test test/misku-cli.test.js test/favicon.test.js test/release.test.js",
+    "test:ui": "playwright test",
+    "test:native": "node scripts/native-smoke.cjs",
+    "tauri": "tauri",
     "prepack": "powershell -NoProfile -ExecutionPolicy Bypass -File ./scripts/build-pnpm-package.ps1"
+  },
+  "devDependencies": {
+    "@axe-core/playwright": "4.13.0",
+    "@playwright/test": "1.63.0",
+    "@tauri-apps/cli": "2.11.4"
   },
   "keywords": [
     "tauri",

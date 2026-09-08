@@ -126,8 +126,10 @@ main().catch(async error => {
   try { await currentPage?.screenshot({ path: path.join(evidence, 'failure.png') }); } catch {}
   console.error(error); process.exitCode = 1;
 }).finally(async () => {
-  for (const child of children.reverse()) await stop(child);
+  // Disconnect DevTools before closing the host: a live debugging connection
+  // can keep WebView2's browser process and metrics files alive briefly.
   for (const browser of browsers) { try { await browser.close(); } catch {} }
+  for (const child of children.reverse()) await stop(child);
   server.close();
   if (path.dirname(root) !== os.tmpdir() || !path.basename(root).startsWith('misku-native-test-')) throw new Error('Unsafe cleanup');
   // WebView2 creates read-only cache leaves; use native Windows cleanup with
@@ -137,7 +139,10 @@ main().catch(async error => {
     '$testRoot = [IO.Path]::GetFullPath($env:MISKU_TEST_ROOT)',
     "$parent = [IO.Path]::GetFullPath([IO.Path]::GetTempPath()).TrimEnd('\\')",
     "if ([IO.Path]::GetDirectoryName($testRoot) -ne $parent -or -not [IO.Path]::GetFileName($testRoot).StartsWith('misku-native-test-')) { throw 'Unsafe cleanup' }",
-    'if (Test-Path -LiteralPath $testRoot) { Remove-Item -LiteralPath $testRoot -Recurse -Force }'
+    'for ($attempt = 0; $attempt -lt 50; $attempt++) {',
+    '  try { if (Test-Path -LiteralPath $testRoot) { Remove-Item -LiteralPath $testRoot -Recurse -Force }; break }',
+    '  catch { if ($attempt -eq 49) { throw }; Start-Sleep -Milliseconds 500 }',
+    '}'
   ].join('\n')], { env: { ...process.env, MISKU_TEST_ROOT: root }, encoding: 'utf8', windowsHide: true, timeout: 30000 });
   if (cleanup.error || cleanup.status !== 0) throw cleanup.error || new Error(cleanup.stderr);
 });

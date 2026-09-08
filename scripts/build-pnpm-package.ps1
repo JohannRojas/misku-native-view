@@ -82,6 +82,14 @@ if ($LASTEXITCODE -ne 0 -or $nativeVersion.Trim() -ne "misku-nv $($packageJson.v
 New-Item -ItemType Directory -Path $runtimeDir -Force | Out-Null
 [System.IO.File]::Copy($releaseExe, $runtimeExe, $true)
 
+if ($env:MISKU_SKIP_NATIVE_BUILD -eq '1') {
+    if ($null -ne (Get-AuthenticodeSignature -LiteralPath $runtimeExe).SignerCertificate) {
+        throw 'Un runtime firmado debe extraerse del instalador; no se modifica su firma.'
+    }
+    & node (Join-Path $PSScriptRoot 'match-nsis-runtime.cjs') $runtimeExe
+    if ($LASTEXITCODE -ne 0) { throw 'No se pudo igualar la metadata NSIS del runtime' }
+}
+
 $runtimeHash = Get-Sha256 -Path $runtimeExe
 Write-Output "PackageRuntime=$runtimeExe"
 Write-Output "PackageRuntimeSha256=$runtimeHash"

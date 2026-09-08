@@ -31,6 +31,8 @@ gh attestation verify ./Misku-Native-Views-0.3.0-x64-setup.exe --repo JohannRoja
 
 `build-info.json` identifica el commit, versión, destino, hash del runtime y estado Authenticode. El instalador aún no está firmado con un certificado de Windows: no se debe presentar la attestation de GitHub como una firma Authenticode. Incorporar firma requiere configurar una identidad de firma real antes de compilar y empaquetar, y mantener los mismos bytes entre npm y el instalador.
 
+Tauri restaura el binario original tras generar NSIS. El empaquetado reproduce en la copia de npm el marcador NSIS del instalador; el smoke test exige igualdad SHA-256 de ambos ejecutables. Ese ajuste rechaza binarios ya firmados. Al incorporar Authenticode, se debe extraer para npm el ejecutable firmado del instalador, sin modificarlo ni volver a firmarlo independientemente.
+
 ## Recuperar una publicación parcial
 
 Reejecuta **los jobs fallidos** de la misma ejecución; así se conservan los artifacts ya probados. Si npm ya publicó exactamente el mismo tarball, el workflow comprueba su integridad SHA-512 y continúa con GitHub. Si los bytes difieren, se detiene: publica una versión nueva. No borres ni muevas un tag publicado y no intentes sobrescribir una versión npm.

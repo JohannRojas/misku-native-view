@@ -1,6 +1,6 @@
 [package]
 name = "misku-native-views"
-version = "0.3.0"
+version = "0.3.1"
 description = "Native WebView runtime and CLI for isolated web apps"
 authors = ["Johan"]
 edition = "2024"

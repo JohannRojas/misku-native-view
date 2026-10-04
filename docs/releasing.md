@@ -8,13 +8,13 @@ La ejecución manual del workflow **Release** es un ensayo: ejecuta los mismos c
 
 1. Actualiza `package.json`, `src-tauri/Cargo.toml`, `src-tauri/tauri.conf.json` y `Cargo.lock`. La validación rechaza cualquier diferencia.
 2. Integra el PR con **CI required** en verde.
-3. Crea un tag `v<version>` sobre ese commit de `main` y súbelo. Por ejemplo, para publicar la versión 0.3.0 ya revisada:
+3. Crea un tag `v<version>` sobre ese commit de `main` y súbelo. Por ejemplo, para publicar la versión 0.3.1 una vez revisada:
 
 ```powershell
 git switch main
 git pull --ff-only
-git tag v0.3.0
-git push origin v0.3.0
+git tag v0.3.1
+git push origin v0.3.1
 ```
 
 El workflow vuelve a validar, compila una sola vez para ambos formatos, prueba las instalaciones y pasa los archivos a la publicación sin recompilarlos. Comprueba que el commit pertenece a `main` y que el tag coincide exactamente. Versiones como `0.4.0-beta.1` se publican en `next` y como prerelease en GitHub; las estables van a `latest`.
@@ -26,7 +26,7 @@ La publicación usa `NPM_TOKEN` en GitHub Actions y el token efímero de GitHub 
 Compara `Get-FileHash <archivo> -Algorithm SHA256` con `SHA256SUMS`. Para verificar la procedencia de GitHub:
 
 ```powershell
-gh attestation verify ./Misku-Native-Views-0.3.0-x64-setup.exe --repo JohannRojas/misku-native-view
+gh attestation verify ./Misku-Native-Views-0.3.1-x64-setup.exe --repo JohannRojas/misku-native-view
 ```
 
 `build-info.json` identifica el commit, versión, destino, hash del runtime y estado Authenticode. El instalador aún no está firmado con un certificado de Windows: no se debe presentar la attestation de GitHub como una firma Authenticode. Incorporar firma requiere configurar una identidad de firma real antes de compilar y empaquetar, y mantener los mismos bytes entre npm y el instalador.

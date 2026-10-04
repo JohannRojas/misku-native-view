@@ -15,9 +15,10 @@ const children = [], browsers = [];
 let currentPage;
 const env = { ...process.env, MISKU_NV_HOME: path.join(root, 'home'), MISKU_NV_PROGRAMS_DIR: path.join(root, 'shortcuts'), MISKU_NV_PROFILE_ROOT: path.join(root, 'profiles'), WEBVIEW2_USER_DATA_FOLDER: undefined };
 const server = http.createServer((req, res) => {
+  if (req.url === '/native.ico') { res.setHeader('Content-Type', 'image/x-icon'); res.end(fs.readFileSync(path.resolve('src-tauri/icons/icon.ico'))); return; }
   if (req.url === '/favicon.ico') { res.writeHead(404).end(); return; }
   res.setHeader('Content-Type', 'text/html');
-  res.end('<!doctype html><title>Misku isolation test</title><h1>Local app</h1>');
+  res.end(`<!doctype html><title>Misku isolation test</title>${req.url === '/with-icon' ? '<link rel="icon" href="/native.ico">' : ''}<h1>Local app</h1>`);
 });
 async function freePort() {
   const net = require('node:net'); const listener = net.createServer();
@@ -76,6 +77,11 @@ async function main() {
     assert.equal(await page.locator('#error').isVisible(), false, await page.locator('#error-detail').textContent());
   }
   await create('Primera'); await create('Segunda');
+  await page.locator('#search').fill('Sin coincidencias');
+  assert.equal(await page.locator('.app-row').count(), 0);
+  await page.locator('#search').fill('');
+  assert.equal(await page.locator('#status').textContent(), '');
+  assert.equal(await page.locator('.app-row').count(), 2);
   const snapshot = () => page.evaluate(() => window.__TAURI__.core.invoke('manager_snapshot'));
   const apps = (await snapshot()).apps;
   assert.equal(apps.length, 2); assert.notEqual(apps[0].instance_id, apps[1].instance_id);
@@ -118,7 +124,27 @@ async function main() {
   assert.equal(fs.existsSync(manifest(apps[0])), true, 'Removal preserves the isolated installation data');
   currentPage = page;
   await page.screenshot({ path: path.join(evidence, 'manager.png') });
-  console.log('Native manager, shortcuts, cache, IPC isolation, duplicate instance and persistent isolated storage passed.');
+  // A registry opened by the native CLI is canonicalized (\\?\ on Windows).
+  // Its browser-discovered favicon must still update that same managed registry.
+  const iconUrl = `http://127.0.0.1:${server.address().port}/with-icon`;
+  const created = spawnSync(exe, ['--config', registry, '--json', 'create', iconUrl, '--name', 'Icono nativo', '--allow-http'], { env, encoding: 'utf8', windowsHide: true, timeout: 15000 });
+  assert.equal(created.status, 0, created.stderr);
+  const iconProfile = JSON.parse(created.stdout)[0].profile;
+  const iconPort = await freePort();
+  const iconApp = launch(['--config', registry, '--app', iconProfile.instance_id], iconPort);
+  await connect(iconPort, iconApp, u => u === iconUrl);
+  let savedIcon;
+  const iconDeadline = Date.now() + 10000;
+  while (Date.now() < iconDeadline) {
+    savedIcon = (await snapshot()).apps.find(app => app.instance_id === iconProfile.instance_id)?.icon;
+    if (savedIcon) break;
+    await delay(200);
+  }
+  assert.ok(savedIcon, 'WebView2 favicon was not persisted through the canonical registry path');
+  assert.equal(fs.existsSync(path.resolve(env.MISKU_NV_HOME, savedIcon)), true);
+  assert.equal(fs.existsSync(manifest(iconProfile)), true);
+  await stop(iconApp, true);
+  console.log('Native manager, search reset, shortcuts, cache, IPC isolation, duplicate instance, persistent isolated storage and browser favicon passed.');
 }
 main().catch(async error => {
   fs.mkdirSync(evidence, { recursive: true });

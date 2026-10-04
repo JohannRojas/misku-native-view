@@ -187,6 +187,7 @@ fn open_profile_window(
     }
 
     let window = builder.build()?;
+    attach_home_shortcut(&window, Url::parse(&profile.url)?);
     attach_native_events(&window, profile, config_path);
     if profile.suspend_when_minimized {
         let view = window.clone();
@@ -271,6 +272,45 @@ fn set_suspended(
 fn set_suspended(_: &tauri::WebviewWindow, _: bool, _: Arc<std::sync::atomic::AtomicBool>) {}
 
 #[cfg(windows)]
+fn attach_home_shortcut(window: &tauri::WebviewWindow, home: Url) {
+    use webview2_com::{
+        AcceleratorKeyPressedEventHandler,
+        Microsoft::Web::WebView2::Win32::COREWEBVIEW2_PHYSICAL_KEY_STATUS,
+    };
+    let view = window.clone();
+    let _ = window.with_webview(move |platform| unsafe {
+        let mut token = 0;
+        let _ = platform.controller().add_AcceleratorKeyPressed(
+            &AcceleratorKeyPressedEventHandler::create(Box::new(move |_, args| {
+                let Some(args) = args else {
+                    return Ok(());
+                };
+                let mut key = 0;
+                let mut status = COREWEBVIEW2_PHYSICAL_KEY_STATUS::default();
+                args.VirtualKey(&mut key)?;
+                args.PhysicalKeyStatus(&mut status)?;
+                // WebView2 consumes Alt+Home before the host menu accelerator.
+                if key == 0x24 && status.IsMenuKeyDown.as_bool() && !status.IsKeyReleased.as_bool()
+                {
+                    args.SetHandled(true)?;
+                    if !status.WasKeyDown.as_bool() {
+                        let view = view.clone();
+                        let home = home.clone();
+                        // Return from the synchronous input callback before navigating.
+                        tauri::async_runtime::spawn_blocking(move || view.navigate(home));
+                    }
+                }
+                Ok(())
+            })),
+            &mut token,
+        );
+    });
+}
+
+#[cfg(not(windows))]
+fn attach_home_shortcut(_: &tauri::WebviewWindow, _: Url) {}
+
+#[cfg(windows)]
 fn attach_native_events(window: &tauri::WebviewWindow, profile: &AppProfile, config_path: &Path) {
     use webview2_com::{
         FaviconChangedEventHandler, GetFaviconCompletedHandler,
@@ -286,6 +326,7 @@ fn attach_native_events(window: &tauri::WebviewWindow, profile: &AppProfile, con
     let name = profile.name.clone();
     let original = profile.clone();
     let config = config_path.to_owned();
+    let showing_error = Arc::new(std::sync::atomic::AtomicBool::new(false));
     let _ = window.with_webview(move |platform| unsafe {
         let Ok(core) = platform.controller().CoreWebView2() else { return; };
         let mut token = 0;
@@ -294,9 +335,13 @@ fn attach_native_events(window: &tauri::WebviewWindow, profile: &AppProfile, con
                 let mut success = BOOL::default(); args.IsSuccess(&mut success)?;
                 let mut status = COREWEBVIEW2_WEB_ERROR_STATUS_OPERATION_CANCELED; args.WebErrorStatus(&mut status)?;
                 if !success.as_bool() && status != COREWEBVIEW2_WEB_ERROR_STATUS_OPERATION_CANCELED {
+                    if showing_error.swap(true, std::sync::atomic::Ordering::AcqRel) { return Ok(()); }
+                    let showing_error = showing_error.clone();
                     let app = app.clone(); let label = label.clone(); let name = name.clone();
                     std::thread::spawn(move || {
-                        if crate::platform::retry_error(&format!("{name} no pudo cargar la página. Comprueba la conexión y vuelve a intentarlo.\n\nDetalles: error de WebView2 {}", status.0))
+                        let retry = crate::platform::retry_error(&format!("{name} no pudo cargar la página. Comprueba la conexión y vuelve a intentarlo.\n\nDetalles: error de WebView2 {}", status.0));
+                        showing_error.store(false, std::sync::atomic::Ordering::Release);
+                        if retry
                             && let Some(view) = app.get_webview_window(&label) { let _ = view.reload(); }
                     });
                 }

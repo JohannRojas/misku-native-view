@@ -34,6 +34,8 @@ test('crear, buscar, editar y eliminar conservando la confirmación', async ({ p
   await page.locator('#search').fill('no coincide');
   await expect(page.locator('#status')).toHaveText('No hay apps que coincidan con tu búsqueda.');
   await page.locator('#search').fill('');
+  await expect(page.locator('#status')).toHaveText('');
+  await expect(page.locator('.app-row')).toHaveCount(1);
   await page.getByRole('button', { name: 'Editar Trabajo', exact: true }).click();
   await page.locator('#name').fill('Personal');
   await page.locator('#save').click();

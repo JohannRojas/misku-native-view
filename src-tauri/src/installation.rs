@@ -325,7 +325,7 @@ pub(crate) fn save_discovered_icon(
         return Ok(None);
     }
     let registry = default_registry()?;
-    let target = if config == registry {
+    let target = if config == registry || registry.canonicalize().is_ok_and(|path| path == config) {
         registry
     } else {
         // Only follow our own installation record inside the managed UUID folder.

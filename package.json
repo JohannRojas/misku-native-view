@@ -37,7 +37,7 @@
     "prepack": "powershell -NoProfile -ExecutionPolicy Bypass -File ./scripts/build-pnpm-package.ps1"
   },
   "devDependencies": {
-    "@axe-core/playwright": "4.13.0",
+    "@axe-core/playwright": "4.14.0",
     "@playwright/test": "1.63.0",
     "@tauri-apps/cli": "2.11.4"
   },
